@@ -1,0 +1,4 @@
+# Keep the build context minimal: only the Dockerfile, the vendored ISC
+# keyblock and the default configs are ever needed.
+**/.git
+**/*.md
