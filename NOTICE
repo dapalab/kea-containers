@@ -1,0 +1,44 @@
+# Attribution
+
+## This project
+
+Unofficial community-built container images for ISC Kea DHCP.
+
+**These images are not published, affiliated with, or endorsed by Internet
+Systems Consortium.** ISC publishes its own official Kea images; see
+<https://cloudsmith.io/~isc/repos/docker/packages/>. Support requests for these
+images belong in this repository's issue tracker, never with ISC.
+
+The name "Kea" and "ISC" are used solely to identify the upstream software
+these images contain.
+
+## Kea
+
+Kea is Copyright (C) 2009-2026 Internet Systems Consortium, Inc. ("ISC") and is
+licensed under the Mozilla Public License 2.0. Kea's source is obtained
+unmodified from <https://downloads.isc.org/isc/kea/>, its PGP signature is
+verified at build time, and `COPYING` and `AUTHORS` are redistributed inside
+every image at `/usr/share/licenses/kea/`.
+
+Kea upstream: <https://gitlab.isc.org/isc-projects/kea>
+
+## ISC's container images
+
+Runtime conventions in these images - config paths, volume layout, exposed
+ports and the single-process `CMD` form - deliberately follow ISC's own
+`kea-docker` images so that these can serve as drop-in replacements.
+
+No files were copied from `kea-docker`. Its Dockerfiles carry
+`SPDX-License-Identifier: MPL-2.0` headers; the conventions adopted here are
+interface facts about how Kea runs rather than expressive content. This
+repository is MPL-2.0 licensed regardless, which matches Kea and removes any
+ambiguity.
+
+`kea-docker` upstream: <https://gitlab.isc.org/isc-projects/kea-docker>
+
+## ISC code-signing keys
+
+`build/keys/isc-keyblock.asc` is ISC's published code-signing keyblock,
+retrieved from <https://www.isc.org/docs/isc-keyblock.asc>. It is redistributed
+unmodified so that tarball signature verification is reproducible and does not
+depend on fetching a key at build time.
