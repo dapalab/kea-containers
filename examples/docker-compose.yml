@@ -1,0 +1,56 @@
+# DHCPv4 + DHCPv6 + DDNS on a macvlan segment.
+#
+# Replace parent, subnets and gateways to match your network. Note that the
+# host cannot reach macvlan containers over that interface by design - use
+# ipvlan, or add a host-side macvlan shim, if you need host access.
+services:
+  kea-dhcp4:
+    image: ghcr.io/dapalab/kea-dhcp4:3.2
+    container_name: kea-dhcp4
+    restart: unless-stopped
+    networks:
+      dhcp:
+        ipv4_address: 192.168.50.2
+    volumes:
+      - ./kea-dhcp4.conf:/etc/kea/kea-dhcp4.conf:ro
+      - leases4:/var/lib/kea
+
+  kea-dhcp6:
+    image: ghcr.io/dapalab/kea-dhcp6:3.2
+    container_name: kea-dhcp6
+    restart: unless-stopped
+    networks:
+      dhcp:
+        ipv6_address: 2001:db8:1::2
+    volumes:
+      - ./kea-dhcp6.conf:/etc/kea/kea-dhcp6.conf:ro
+      - leases6:/var/lib/kea
+
+  # DDNS needs no special networking - it talks to a DNS server over UDP and
+  # needs no broadcast visibility, so a plain bridge is correct here.
+  kea-dhcp-ddns:
+    image: ghcr.io/dapalab/kea-dhcp-ddns:3.2
+    container_name: kea-dhcp-ddns
+    restart: unless-stopped
+    networks: [ internal ]
+    volumes:
+      - ./kea-dhcp-ddns.conf:/etc/kea/kea-dhcp-ddns.conf:ro
+
+networks:
+  dhcp:
+    driver: macvlan
+    driver_opts:
+      parent: eth0
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 192.168.50.0/24
+          gateway: 192.168.50.1
+        - subnet: 2001:db8:1::/64
+          gateway: 2001:db8:1::1
+  internal:
+    driver: bridge
+
+volumes:
+  leases4:
+  leases6:
