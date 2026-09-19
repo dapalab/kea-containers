@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Single source of truth for the build matrix. One entry per ISC-supported Kea branch.",
+    "Adding or retiring a branch is an edit here only - never in a workflow.",
+    "",
+    "  kea          full upstream version; upstream git tag is Kea-<kea>",
+    "  alpine       Alpine release line, for humans",
+    "  alpineRef    what the Dockerfile actually pins - multi-arch index digest",
+    "  lts          marks the branch that also gets the -lts moving tag",
+    "  images       image suffixes built for this branch; published as kea-<suffix>",
+    "",
+    "3.0 ships kea-ctrl-agent; it was removed upstream in 3.2 once the daemons",
+    "gained native HTTP/TLS control sockets. Hence a per-branch image list."
+  ],
+  "branches": {
+    "3.2": {
+      "kea": "3.2.0",
+      "alpine": "3.24",
+      "alpineRef": "alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+      "lts": false,
+      "images": ["dhcp4", "dhcp6", "dhcp-ddns", "tools"]
+    },
+    "3.0": {
+      "kea": "3.0.4",
+      "alpine": "3.24",
+      "alpineRef": "alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6",
+      "lts": true,
+      "images": ["dhcp4", "dhcp6", "dhcp-ddns", "ctrl-agent", "tools"]
+    }
+  }
+}
