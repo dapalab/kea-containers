@@ -91,7 +91,7 @@ ARG KEA_UID=10000
 ARG KEA_GID=10000
 
 RUN set -eux; \
-    apk add --no-cache libstdc++ log4cplus libcrypto3 libssl3 tzdata; \
+    apk add --no-cache libstdc++ log4cplus libcrypto3 libssl3 tzdata netcat-openbsd; \
     addgroup -S -g "${KEA_GID}" kea; \
     adduser -S -u "${KEA_UID}" -G kea -H -s /sbin/nologin kea; \
     mkdir -p /etc/kea /var/lib/kea /run/kea; \
@@ -124,6 +124,13 @@ RUN set -eux; \
     setcap cap_net_raw,cap_net_bind_service=+ep /usr/sbin/kea-dhcp4; \
     apk del .setcap; \
     getcap /usr/sbin/kea-dhcp4 || true
+# Ask the daemon for its own status over the unix control socket. This proves
+# the daemon is actually answering, not merely that the process exists or the
+# socket file was created.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD echo '{"command":"status-get"}' \
+        | nc -U -N -w3 /run/kea/control_socket_4 \
+        | grep -q '"result": *0'
 USER kea
 EXPOSE 67/udp 67/tcp 8000/tcp 8001/tcp
 VOLUME ["/etc/kea", "/var/lib/kea"]
@@ -140,6 +147,13 @@ RUN set -eux; \
     apk add --no-cache --virtual .setcap libcap; \
     setcap cap_net_bind_service=+ep /usr/sbin/kea-dhcp6; \
     apk del .setcap
+# Ask the daemon for its own status over the unix control socket. This proves
+# the daemon is actually answering, not merely that the process exists or the
+# socket file was created.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD echo '{"command":"status-get"}' \
+        | nc -U -N -w3 /run/kea/control_socket_6 \
+        | grep -q '"result": *0'
 USER kea
 EXPOSE 547/udp 547/tcp 8000/tcp 8001/tcp
 VOLUME ["/etc/kea", "/var/lib/kea"]
@@ -151,6 +165,13 @@ CMD ["/usr/sbin/kea-dhcp6", "-c", "/etc/kea/kea-dhcp6.conf"]
 FROM runtime-base AS dhcp-ddns
 COPY --from=builder /stage/usr/sbin/kea-dhcp-ddns /usr/sbin/kea-dhcp-ddns
 COPY config/kea-dhcp-ddns.conf /etc/kea/kea-dhcp-ddns.conf
+# Ask the daemon for its own status over the unix control socket. This proves
+# the daemon is actually answering, not merely that the process exists or the
+# socket file was created.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD echo '{"command":"status-get"}' \
+        | nc -U -N -w3 /run/kea/control_socket_d2 \
+        | grep -q '"result": *0'
 USER kea
 EXPOSE 53001/udp 8000/tcp
 VOLUME ["/etc/kea"]
