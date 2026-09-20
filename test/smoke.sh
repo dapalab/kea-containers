@@ -16,6 +16,10 @@ set -euo pipefail
 
 DHCP4_IMAGE="${DHCP4_IMAGE:-kea-dhcp4:test}"
 TOOLS_IMAGE="${TOOLS_IMAGE:-kea-tools:test}"
+# Gate 5 checks the other published images too. Derived from DHCP4_IMAGE so a
+# single variable still drives everything, local :test tags or published ones.
+IMAGE_PREFIX="${IMAGE_PREFIX:-$(printf '%s' "$DHCP4_IMAGE" | sed 's/dhcp4:.*$//')}"
+IMAGE_SUFFIX="${IMAGE_SUFFIX:-:$(printf '%s' "$DHCP4_IMAGE" | sed 's/^.*://')}"
 EXPECT_VERSION="${EXPECT_VERSION:-}"
 
 NET="kea-smoke-net"
@@ -241,5 +245,65 @@ if [ -n "$OUTSIDE" ]; then
   fail "addresses allocated outside the configured pool"
 fi
 pass "all allocated addresses fall within the configured pool"
+
+###############################################################################
+info "Gate 5: every published image starts and reports healthy"
+###############################################################################
+# Gates 1-4 only exercise kea-dhcp4, with kea-tools as the perfdhcp driver.
+# Without this gate a completely broken kea-dhcp6, kea-dhcp-ddns or
+# kea-ctrl-agent would sail through CI and be published, because "it compiled"
+# was the only thing being checked.
+#
+# Each image is started with the DEFAULT config it ships, which also proves
+# those templates work as shipped rather than merely parsing.
+check_starts() {  # $1=image suffix  $2=expected log token  $3="health" to also await healthy
+  img="$1"; token="$2"; wants_health="$3"; name="kea-smoke-$1"; logs=""
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker run -d --name "$name" "${IMAGE_PREFIX}${img}${IMAGE_SUFFIX}" >/dev/null 2>&1 \
+    || fail "$img: container would not start at all"
+  for _ in $(seq 1 30); do
+    logs="$(docker logs "$name" 2>&1 || true)"
+    case "$logs" in *"$token"*) break ;; esac
+    sleep 1
+  done
+  case "$logs" in
+    *"$token"*) pass "$img started ($token)" ;;
+    *) printf '%s\n' "$logs" | tail -12 | sed 's/^/      /'
+       docker rm -f "$name" >/dev/null 2>&1 || true
+       fail "$img never logged $token" ;;
+  esac
+
+  if [ "$wants_health" = "health" ]; then
+    st=""
+    for _ in $(seq 1 24); do
+      st="$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null || echo none)"
+      [ "$st" = "healthy" ] && break
+      [ "$st" = "none" ] && break
+      sleep 5
+    done
+    if [ "$st" = "healthy" ]; then
+      pass "$img healthcheck reports healthy"
+    else
+      docker inspect -f '{{range .State.Health.Log}}{{.Output}}{{end}}' "$name" 2>/dev/null \
+        | tail -5 | sed 's/^/      /'
+      docker rm -f "$name" >/dev/null 2>&1 || true
+      fail "$img healthcheck never became healthy (status: $st)"
+    fi
+  fi
+  docker rm -f "$name" >/dev/null 2>&1 || true
+}
+
+check_starts dhcp6     DHCP6_STARTED     health
+check_starts dhcp-ddns DHCP_DDNS_STARTED health
+
+# ctrl-agent exists only on the 3.0 branch. Its healthcheck is an HTTP request
+# rather than a unix socket probe, and this is the only place it is exercised
+# against a real agent rather than a mock.
+ca_img="${IMAGE_PREFIX}ctrl-agent${IMAGE_SUFFIX}"
+if docker image inspect "$ca_img" >/dev/null 2>&1 || docker pull -q "$ca_img" >/dev/null 2>&1; then
+  check_starts ctrl-agent CTRL_AGENT_STARTED health
+else
+  printf '  \033[33mskip\033[0m  kea-ctrl-agent not built for this branch\n'
+fi
 
 printf '\n\033[32mAll gates passed.\033[0m\n'
