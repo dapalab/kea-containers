@@ -188,13 +188,18 @@ CMD ["/usr/sbin/kea-dhcp-ddns", "-c", "/etc/kea/kea-dhcp-ddns.conf"]
 # omit (their issue #46: schema updates impossible, kea-admin missing), and so
 # CI has a first-class way to drive the perfdhcp functional test.
 #
+# kea-shell is deliberately NOT included. It is a standalone Python client for
+# the control API and nothing depends on it: HA runs inside the daemons via
+# libdhcp_ha.so with peers talking HTTP directly, and DDNS is the daemons
+# sending NCRs to kea-dhcp-ddns over UDP. Shipping it would drag python3 into
+# the image and roughly double its size. The control API is reachable with the
+# netcat already present in every image - see README.
+#
 # perfdhcp gets CAP_NET_RAW so it can craft DHCPv4 packets as a non-root user.
 ###############################################################################
 FROM runtime-base AS tools
-RUN apk add --no-cache python3
 COPY --from=builder /stage/usr/sbin/perfdhcp   /usr/sbin/perfdhcp
 COPY --from=builder /stage/usr/sbin/kea-lfc    /usr/sbin/kea-lfc
-COPY --from=builder /stage/usr/sbin/kea-shell  /usr/sbin/kea-shell
 COPY --from=builder /stage/usr/sbin/kea-admin  /usr/sbin/kea-admin
 COPY --from=builder /stage/usr/sbin/keactrl    /usr/sbin/keactrl
 RUN set -eux; \

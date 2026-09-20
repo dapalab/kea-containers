@@ -38,7 +38,7 @@ Every deliberate deviation is listed in [Deviations](#deviations-from-iscs-image
 | `ghcr.io/dapalab/kea-dhcp6` | DHCPv6 server | 3.2, 3.0 |
 | `ghcr.io/dapalab/kea-dhcp-ddns` | Dynamic DNS updates | 3.2, 3.0 |
 | `ghcr.io/dapalab/kea-ctrl-agent` | REST control agent | **3.0 only** |
-| `ghcr.io/dapalab/kea-tools` | `perfdhcp`, `kea-shell`, `kea-admin`, `keactrl` | 3.2, 3.0 |
+| `ghcr.io/dapalab/kea-tools` | `perfdhcp`, `kea-admin`, `keactrl`, `kea-lfc` | 3.2, 3.0 |
 
 `kea-ctrl-agent` exists only for 3.0. It was removed upstream in 3.2 once the
 daemons gained native HTTP/TLS control sockets.
@@ -46,6 +46,11 @@ daemons gained native HTTP/TLS control sockets.
 `kea-tools` is not a daemon. It carries the administrative tooling ISC's images
 omit — notably `kea-admin`, whose absence makes database schema updates
 impossible ([kea-docker#46](https://gitlab.isc.org/isc-projects/kea-docker/-/issues/46)).
+
+It deliberately does **not** include `kea-shell`. That is a standalone Python
+client for the control API, and including it would pull `python3` in and double
+the image size. Nothing depends on it — see
+[Talking to the control API](#talking-to-the-control-api).
 
 ## Tags
 
@@ -168,6 +173,32 @@ to `eth0`. A DHCP server that starts up already willing to hand out addresses
 is a poor default for an image intended to run on macvlan.
 
 Working examples are in [`examples/`](examples/).
+
+## Talking to the control API
+
+Every image ships `nc` (used by the healthcheck), so the full control API is
+reachable without `kea-shell` or any extra tooling:
+
+```bash
+docker exec kea4 sh -c \
+  'echo "{\"command\":\"status-get\"}" | nc -U -N -w3 /run/kea/control_socket_4'
+```
+
+All 33 commands work this way — `config-get`, `config-reload`, `lease4-get`,
+`statistic-get-all`, `list-commands` and the rest. Pipe through `python3 -m
+json.tool` or `jq` on the host if you want it formatted.
+
+If you have enabled the HTTP control socket, `curl` works equally well:
+
+```bash
+curl -s -u admin:$PASS -H 'Content-Type: application/json' \
+  -d '{"command":"status-get","service":["dhcp4"]}' http://127.0.0.1:8000/
+```
+
+> **Note on HA and DDNS.** Neither depends on any of this. High availability
+> runs inside the daemons via `libdhcp_ha.so`, with peers talking HTTP directly
+> to each other; DDNS is the DHCP daemons sending name-change requests to
+> `kea-dhcp-ddns` over UDP/53001. The control API is for administration only.
 
 ## Deviations from ISC's images
 

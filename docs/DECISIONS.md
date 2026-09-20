@@ -96,13 +96,22 @@ the `org.opencontainers.image.source` label — so one repo publishes
 
 ## D5 — `kea-tools` as a published image
 
-**Decision.** Publish a fifth image carrying `perfdhcp`, `kea-shell`,
-`kea-admin` and `keactrl`.
+**Decision.** Publish a fifth image carrying `perfdhcp`, `kea-admin`,
+`keactrl` and `kea-lfc`. **`kea-shell` is deliberately excluded.**
 
 **Why.** A load generator does not belong inside a production DHCP server
 image, but CI needs `perfdhcp` to prove a real handshake. Splitting it out
 solves that and closes a real gap in ISC's images: their issue #46 is
 "database schema update impossible because kea-admin missing in docker images".
+
+**Why not `kea-shell`.** It is a standalone Python client for the control API.
+Including it requires `python3`, which measured at **122 MB -> 65 MB** when
+removed: more than half the image existed to support one convenience wrapper.
+Verified that nothing depends on it — no binary or library references it, the
+HA hook `libdhcp_ha.so` has no Python dependency and lives in the daemon images
+anyway, and DDNS is daemon-to-daemon over UDP. The full 33-command control API
+is reachable with the `nc` already present in every image for the healthcheck,
+so this removes a wrapper, not a capability.
 
 ---
 
@@ -275,17 +284,17 @@ repository would have cost four compiles instead of one.
 | `kea-dhcp-ddns` | 58 MB | |
 | `kea-dhcp6` | 68 MB | |
 | `kea-dhcp4` | 68 MB | |
-| `kea-tools` | 122 MB | `python3` for `kea-shell` accounts for most of the difference |
+| `kea-tools` | 65 MB | was 122 MB; `kea-shell` and its `python3` dependency removed |
 
 Transfer size tells the more useful story:
 
 | | |
 |---|---|
 | `kea-dhcp4` alone | 18.9 MB |
-| All four together | **42.2 MB** |
+| All four together | **27.4 MB** |
 
 Four layers are shared by all four images (Alpine base, runtime packages, the
-`libkea-*` stack, licences). Pulling all four therefore costs roughly 2.2x one
+`libkea-*` stack, licences). Pulling all four therefore costs roughly 1.5x one
 image rather than 4x — the marginal cost of each extra image is its binary,
 plus `python3` in the case of `kea-tools`.
 
