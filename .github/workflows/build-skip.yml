@@ -29,6 +29,7 @@ on:
       - 'renovate.json5'
       - '.github/workflows/renovate.yml'
       - '.github/workflows/upstream-watch.yml'
+      - '.github/workflows/scan.yml'
       - '.github/workflows/build-skip.yml'
 
 permissions:

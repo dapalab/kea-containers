@@ -1,0 +1,154 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Scan the PUBLISHED images for known vulnerabilities and open an issue.
+#
+# Deliberately scans what is in the registry, not what a build just produced.
+# The question this answers is "is what people are pulling right now
+# exposed?", which a build-time scan cannot answer: the weekly rebuild picks
+# up Alpine fixes, but between rebuilds the published images drift behind and
+# nothing was reporting that.
+#
+# TWO SCANS PER IMAGE, and the second is the one that matters here.
+#   grype on the image      -> apk packages
+#   grype on the shipped    -> Kea itself, via the CPE in the SPDX document
+#   SPDX document              (D23)
+# Verified: grype scanning an image does NOT read the SBOM document inside
+# it. Against a test image embedding a deliberately old Kea, the image scan
+# found 0 Kea CVEs and the document scan found 3. Kea is built from source,
+# so without the second scan the component most worth watching is invisible.
+#
+# grype rather than trivy, measured: against an SBOM naming Kea 1.4.0, trivy
+# reported nothing and parsed no packages from the document at all, while
+# grype matched CVE-2018-5739, CVE-2019-6472 and CVE-2019-6474.
+#
+# Like upstream-watch.yml, an issue is opened for BOTH "found something" and
+# "the check broke". A scanner that silently stops reporting is worse than no
+# scanner, because silence gets read as a clean bill of health.
+name: scan
+
+on:
+  schedule:
+    # Daily, offset from the Monday rebuild (04:17), Renovate (05:23) and the
+    # Thursday upstream watcher (06:42) so the four are distinguishable.
+    - cron: '48 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  # Pinned by digest, and Renovate keeps it current, so a scan cannot start
+  # silently using a different tool than the one these findings were tuned
+  # against.
+  GRYPE: anchore/grype:v0.119.0@sha256:8c2c9234a345577a6d321a4753aa3ee1276d8975c8452d2344a56b57733ecad3
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan the published images
+        id: scan
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/scan
+          args=()
+          # Collects why any target could not be scanned. Passed to
+          # --partial, which banners the report and forces the broken exit
+          # code even if other targets reported findings - a coverage gap
+          # must not be filed under "vulnerabilities found".
+          broken=""
+
+          for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
+            kea="$(python3 -c "import json,sys;print(json.load(open('versions.json'))['branches'][sys.argv[1]]['kea'])" "$branch")"
+            for img in $(./scripts/matrix.py images "$branch"); do
+              ref="${REGISTRY}/${OWNER}/kea-${img}:${branch}"
+              echo "::group::scan $ref"
+
+              # 1. the image itself - apk packages
+              if ! docker run --rm -v /tmp/grype-db:/.cache "$GRYPE" \
+                     "$ref" -o json -q > "/tmp/scan/${img}-${branch}-image.json"; then
+                echo "::warning::grype failed on $ref (image)"
+                broken="${broken}grype failed scanning $ref (image)"$'\n' 
+              fi
+              args+=("${ref} (image)=/tmp/scan/${img}-${branch}-image.json")
+
+              # 2. the SPDX document the image ships - Kea itself
+              doc="/tmp/scan/${img}-${branch}-kea.spdx.json"
+              if docker run --rm --entrypoint cat "$ref" \
+                   /usr/share/sbom/kea.spdx.json > "$doc" 2>/dev/null; then
+                # Validate before scanning. A document grype cannot read
+                # yields zero findings, which is indistinguishable from good
+                # news - the exact failure this whole workflow guards against.
+                if ./test/check-sbom-doc.py "$kea" < "$doc" >/dev/null; then
+                  if ! docker run --rm -v /tmp/grype-db:/.cache -v "$doc:/kea.spdx.json:ro" \
+                         "$GRYPE" "sbom:/kea.spdx.json" -o json -q \
+                         > "/tmp/scan/${img}-${branch}-sbom.json"; then
+                    echo "::warning::grype failed on $ref (sbom)"
+                    broken="${broken}grype failed scanning $ref (kea sbom)"$'\n' 
+                  fi
+                  args+=("${ref} (kea sbom)=/tmp/scan/${img}-${branch}-sbom.json")
+                else
+                  echo "::error::$ref ships an SBOM document that does not validate"
+                  broken="${broken}$ref ships an SBOM document that does not validate"$'\n' 
+                fi
+              else
+                echo "::error::$ref does not ship /usr/share/sbom/kea.spdx.json"
+                broken="${broken}$ref does not ship /usr/share/sbom/kea.spdx.json"$'\n' 
+              fi
+              echo "::endgroup::"
+            done
+          done
+
+          set +e
+          ./scripts/scan-report.py "${args[@]}" --threshold High \
+            --partial "$broken" --out scan-report.md
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "No findings at High or above." ;;
+            1) echo "::warning::the vulnerability scan itself is broken" ;;
+            2) echo "::notice::vulnerabilities found in published images" ;;
+            *) echo "::error::unexpected exit code $code"; exit 1 ;;
+          esac
+
+      - name: Open or update the tracking issue
+        if: steps.scan.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODE: ${{ steps.scan.outputs.code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$CODE" = "1" ]; then
+            title="Vulnerability scan is broken"
+            labels="scan,bug"
+          else
+            title="Vulnerabilities found in published images"
+            labels="scan,security"
+          fi
+
+          gh label create scan --color 1D76DB \
+            --description "Raised by the published-image vulnerability scan" 2>/dev/null || true
+          gh label create bug --color D73A4A 2>/dev/null || true
+          gh label create security --color B60205 \
+            --description "Supply-chain or signing-key issue" 2>/dev/null || true
+
+          # One issue, updated by comment, rather than a new one every night.
+          existing="$(gh issue list --state open --label scan \
+                       --search "$title in:title" --json number --jq '.[0].number // empty')"
+          printf '\n---\n\n[Scan run](%s)\n' "$RUN_URL" >> scan-report.md
+          if [ -n "$existing" ]; then
+            echo "Issue #$existing is already open; commenting instead."
+            gh issue comment "$existing" --body-file scan-report.md
+          else
+            gh issue create --title "$title" --label "$labels" --body-file scan-report.md
+          fi

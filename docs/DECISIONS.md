@@ -1144,3 +1144,65 @@ three cases reported "not valid JSON" — three green ticks, none testing what
 they claimed. The tests now assert the *expected message*, not just a
 non-zero exit.
 
+---
+
+## D24 — Scan the published images, with grype, twice per image
+
+**Decision.** A daily workflow scans the **published** tags and opens an
+issue on HIGH or above — or if the scan itself could not run.
+
+**Why the published images and not the build.** A build-time scan answers
+"was this clean when we made it". The question worth answering is "is what
+people are pulling right now exposed", and those diverge the moment an
+Alpine CVE lands after a build. The weekly rebuild closes the gap; nothing
+was reporting how wide it was meanwhile.
+
+**grype, not trivy — measured, not preferred.** Against an SBOM naming Kea
+1.4.0, which has known CVEs:
+
+| Tool | Result |
+|---|---|
+| `trivy sbom` | 0 findings; `--list-all-pkgs` shows it parses **no packages at all** from the document |
+| `grype sbom` | CVE-2018-5739, CVE-2019-6472, CVE-2019-6474 |
+
+grype does CPE matching for packages it cannot place in an ecosystem, which
+is exactly the case for software built from a tarball. The CPE added in D23
+is what makes this work; without it neither tool would see Kea.
+
+**Two scans per image, because one is not enough.** Verified against a test
+image embedding a deliberately old Kea:
+
+| Scan | Finds |
+|---|---|
+| `grype <image>` | apk packages |
+| `grype sbom:<the document the image ships>` | Kea itself |
+
+Scanning the image does **not** read the SPDX document inside it — the image
+scan found 0 Kea CVEs where the document scan found 3. Since Kea is compiled
+from source, skipping the second scan would leave the one component most
+worth watching invisible.
+
+The shipped document is validated with `test/check-sbom-doc.py` before being
+scanned. A document grype cannot read yields zero findings, which is
+indistinguishable from good news.
+
+**A partial scan outranks findings.** If any target cannot be scanned the run
+reports as broken even when other targets produced findings, and the report
+is bannered accordingly. The failure this avoids is subtle: one image fails
+to scan, another happens to have a CVE, the run is filed as "vulnerabilities
+found", and the coverage gap goes unmentioned *because* something else was
+reported.
+
+**Already found something.** On the first dry run against
+`kea-dhcp4:3.2`, grype reported `CVE-2026-85091` in `zlib 1.3.2-r0`, High,
+**no fix available upstream**. Trivy reported nothing for the same image.
+That disagreement is itself the argument for pinning the scanner by digest
+(Renovate keeps it current): "no findings" means something different from
+one tool and version to the next, and a silent change of tool would silently
+change the meaning of a green run.
+
+**Ordering constraint worth remembering.** The scan requires images that ship
+the D23 SBOM document. Until a build has republished them it will correctly
+report itself broken, because the document is genuinely absent — verified by
+dry-running it against the images published before D23 landed.
+

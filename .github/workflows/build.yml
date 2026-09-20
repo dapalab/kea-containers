@@ -43,6 +43,7 @@ on:
       # NOT listed - a change to it must rebuild.
       - '.github/workflows/renovate.yml'
       - '.github/workflows/upstream-watch.yml'
+      - '.github/workflows/scan.yml'
       - '.github/workflows/build-skip.yml'
   pull_request:
     # Same filter as the push trigger, so a documentation PR does not
@@ -59,6 +60,7 @@ on:
       - 'renovate.json5'
       - '.github/workflows/renovate.yml'
       - '.github/workflows/upstream-watch.yml'
+      - '.github/workflows/scan.yml'
       - '.github/workflows/build-skip.yml'
   schedule:
     # Weekly rebuild so Alpine security fixes land without a Kea release.
@@ -107,7 +109,8 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable \
             test/smoke.sh test/verify-signature-test.sh \
-            build/verify-tarball.sh build/make-sbom.sh test/make-sbom-test.sh
+            build/verify-tarball.sh build/make-sbom.sh test/make-sbom-test.sh \
+            test/scan-report-test.sh
 
       # The source-tarball signature gate, driven against expired, revoked,
       # untrusted and tampered fixtures. It needs only gpg, so it belongs here
@@ -121,6 +124,13 @@ jobs:
       # the published SBOM with a green build.
       - name: SBOM document generator tests
         run: ./test/make-sbom-test.sh
+
+      # The scan reporter. Its important behaviour is telling "ran and found
+      # nothing" apart from "errored and produced nothing" - if those ever
+      # collapse into the same exit code, the scan goes quiet and that reads
+      # as good news.
+      - name: Scan reporter tests
+        run: ./test/scan-report-test.sh
 
       - name: Validate shipped config templates
         run: ./scripts/validate-configs.py

@@ -85,6 +85,18 @@
       ],
       datasourceTemplate: 'docker',
     },
+    {
+      // The grype image used by the scan workflow, pinned by tag AND digest.
+      // A scanner that silently drifts to a different version is a scanner
+      // whose "no findings" means something different from last week.
+      customType: 'regex',
+      description: 'grype image in the scan workflow',
+      managerFilePatterns: ['/^\\.github/workflows/scan\\.yml$/'],
+      matchStrings: [
+        'GRYPE:\\s*(?<depName>[a-z0-9/]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})',
+      ],
+      datasourceTemplate: 'docker',
+    },
   ],
 
   packageRules: [
