@@ -1,0 +1,260 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Build, test and publish the Kea images.
+#
+# Shape of this workflow, and why:
+#
+#   matrix  reads versions.json and emits one job per (branch, arch). NOT per
+#           (branch, image, arch) - every image in a branch comes out of one
+#           builder stage, so fanning out per image would recompile Kea for
+#           each one.
+#
+#   build   runs natively on the target architecture. No QEMU: Kea is a large
+#           C++ codebase and an emulated aarch64 compile is slow enough to risk
+#           the job timeout. Tests run BEFORE anything is pushed, and images are
+#           pushed by digest only - no tags yet.
+#
+#   fuse    joins the per-arch digests into one manifest list per image and
+#           applies the tags. Until this runs, nothing is reachable by tag, so
+#           a half-finished run never leaves a partially updated tag behind.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly rebuild so Alpine security fixes land without a Kea release.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate versions.json
+        run: ./scripts/matrix.py check
+
+      # DL3018 (pin apk versions) is ignored deliberately. Pinning package
+      # versions would defeat the weekly rebuild, whose whole purpose is to
+      # pick up Alpine security fixes without a Kea release. The base image is
+      # digest-pinned, which is where reproducibility is anchored instead.
+      - name: hadolint
+        run: |
+          docker run --rm -i hadolint/hadolint:latest-alpine \
+            hadolint --ignore DL3018 - < build/Dockerfile
+
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+
+      - name: shellcheck
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable \
+            test/smoke.sh
+
+      - name: Validate shipped config templates
+        run: ./scripts/validate-configs.py
+
+  # ---------------------------------------------------------------------------
+  matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: gen
+        run: echo "matrix=$(./scripts/matrix.py matrix)" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  build:
+    needs: [lint, matrix]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build every image for this branch locally first. The builder stage
+      # compiles Kea once; the per-image targets come out of that same cache,
+      # which is why this is one job rather than one per image.
+      - name: Build images for testing
+        env:
+          IMAGES: ${{ matrix.images }}
+          KEA: ${{ matrix.kea }}
+          ALPINE_REF: ${{ matrix.alpineRef }}
+          BRANCH: ${{ matrix.branch }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          for img in $IMAGES; do
+            echo "::group::build kea-$img (test)"
+            docker buildx build \
+              --target "$img" \
+              --build-arg "KEA_VERSION=$KEA" \
+              --build-arg "ALPINE_REF=$ALPINE_REF" \
+              --cache-from "type=gha,scope=${BRANCH}-${ARCH}" \
+              --cache-to   "type=gha,scope=${BRANCH}-${ARCH},mode=max" \
+              --load -t "kea-$img:test" \
+              -f build/Dockerfile build/
+            echo "::endgroup::"
+          done
+
+      - name: Verify provenance of the build
+        run: |
+          set -euo pipefail
+          echo "Kea version reported by the binary:"
+          docker run --rm kea-dhcp4:test /usr/sbin/kea-dhcp4 -V
+          echo "Architecture:"
+          docker run --rm kea-dhcp4:test uname -m
+
+      - name: Functional smoke test
+        env:
+          DHCP4_IMAGE: kea-dhcp4:test
+          TOOLS_IMAGE: kea-tools:test
+          EXPECT_VERSION: ${{ matrix.kea }}
+        run: ./test/smoke.sh
+
+      # Only now, with tests green, push. By digest and with no tag: the
+      # fuse job applies tags once BOTH architectures have succeeded.
+      - name: Push by digest
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGES: ${{ matrix.images }}
+          KEA: ${{ matrix.kea }}
+          ALPINE_REF: ${{ matrix.alpineRef }}
+          BRANCH: ${{ matrix.branch }}
+          ARCH: ${{ matrix.arch }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          for img in $IMAGES; do
+            echo "::group::push kea-$img@digest"
+            docker buildx build \
+              --target "$img" \
+              --build-arg "KEA_VERSION=$KEA" \
+              --build-arg "ALPINE_REF=$ALPINE_REF" \
+              --cache-from "type=gha,scope=${BRANCH}-${ARCH}" \
+              --provenance=true --sbom=true \
+              --metadata-file /tmp/meta.json \
+              --output "type=image,name=${REGISTRY}/${OWNER}/kea-${img},push-by-digest=true,name-canonical=true,push=true" \
+              -f build/Dockerfile build/
+            digest="$(jq -r '."containerimage.digest"' /tmp/meta.json)"
+            test -n "$digest" && test "$digest" != "null"
+            echo "$digest" > "/tmp/digests/${img}"
+            echo "kea-${img} ${ARCH} -> ${digest}"
+            echo "::endgroup::"
+          done
+
+      - name: Upload digests
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ matrix.branch }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  fuse:
+    needs: [matrix, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+
+      - name: Create manifest lists and apply tags
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
+            for img in $(./scripts/matrix.py images "$branch"); do
+              refs=()
+              for arch in amd64 arm64; do
+                f="/tmp/digests/digests-${branch}-${arch}/${img}"
+                if [ ! -f "$f" ]; then
+                  echo "::error::missing digest for kea-${img} ${branch}/${arch}"
+                  exit 1
+                fi
+                refs+=("${REGISTRY}/${OWNER}/kea-${img}@$(cat "$f")")
+              done
+
+              mapfile -t tags < <(./scripts/matrix.py tags "$branch" "$img" \
+                                    --registry "$REGISTRY" --owner "$OWNER")
+              targs=()
+              for t in "${tags[@]}"; do targs+=(--tag "$t"); done
+
+              echo "::group::kea-${img} (${branch})"
+              printf '  tag: %s\n' "${tags[@]}"
+              printf '  arch: %s\n' "${refs[@]}"
+              docker buildx imagetools create "${targs[@]}" "${refs[@]}"
+              echo "::endgroup::"
+            done
+          done
+
+      - name: Verify published manifests are genuinely multi-arch
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
+            for img in $(./scripts/matrix.py images "$branch"); do
+              ref="${REGISTRY}/${OWNER}/kea-${img}:${branch}"
+              got="$(docker buildx imagetools inspect --raw "$ref" \
+                     | jq -r '[.manifests[].platform | select(.os=="linux") |
+                              "\(.architecture)"] | sort | unique | join(",")')"
+              if [ "$got" = "amd64,arm64" ]; then
+                echo "  ok    $ref -> $got"
+              else
+                echo "::error::$ref resolved to [$got], expected amd64,arm64"
+                fail=1
+              fi
+            done
+          done
+          exit "$fail"

@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Watch ISC's supported Kea branch set and open an issue when it changes.
+#
+# Renovate tracks version numbers but has no idea about ISC's support policy -
+# it cannot tell us a new stable branch has appeared or an old one has reached
+# EOL. This closes that gap.
+#
+# Design note: an issue is opened for BOTH "the set changed" and "the check
+# itself broke". A scraper that silently stops matching is worse than no
+# scraper, because silence reads as "nothing changed". Here, silence always
+# means the check ran and genuinely found nothing.
+name: upstream-watch
+
+on:
+  schedule:
+    # Thursdays, deliberately offset from the Monday rebuild so the two are
+    # easy to tell apart in the Actions list.
+    - cron: '42 6 * * 4'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check ISC's supported branch set
+        id: check
+        run: |
+          set +e
+          ./scripts/check-upstream.py
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "No change." ;;
+            1) echo "::warning::upstream watcher could not parse ISC's download index" ;;
+            2) echo "::notice::ISC's supported branch set has changed" ;;
+            *) echo "::error::unexpected exit code $code"; exit 1 ;;
+          esac
+
+      # Do not open a second issue if one is already open. The weekly schedule
+      # would otherwise file a duplicate every Thursday until someone acts.
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODE: ${{ steps.check.outputs.code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$CODE" = "1" ]; then
+            title="Upstream watcher is broken"
+            labels="upstream-watch,bug"
+          else
+            title="ISC supported Kea branches have changed"
+            labels="upstream-watch"
+          fi
+
+          # Ensure labels exist; harmless if they already do.
+          gh label create upstream-watch --color 0E8A16 \
+            --description "Raised by the upstream support-set watcher" 2>/dev/null || true
+          gh label create bug --color D73A4A 2>/dev/null || true
+
+          existing="$(gh issue list --state open --label upstream-watch \
+                       --search "$title in:title" --json number --jq '.[0].number // empty')"
+
+          printf '\n---\n\n[Watcher run](%s)\n' "$RUN_URL" >> upstream-report.md
+
+          if [ -n "$existing" ]; then
+            echo "Issue #$existing is already open; adding a comment instead."
+            gh issue comment "$existing" --body-file upstream-report.md
+          else
+            gh issue create --title "$title" --label "$labels" --body-file upstream-report.md
+          fi
