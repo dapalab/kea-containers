@@ -696,3 +696,5 @@ passes. The owner retains direct push as a deliberate exception, which is the
 right split - the automation is constrained, the human is not.
 
 <!-- deadlock probe: docs-only change, must still satisfy branch protection -->
+
+<!-- second probe -->
