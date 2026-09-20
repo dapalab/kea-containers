@@ -212,6 +212,39 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------
+  # A single, STABLY NAMED check for branch protection to require.
+  #
+  # The build jobs are a matrix, so their names embed the Kea version and the
+  # Alpine digest: "build (3.2, 3.2.0, alpine:3.24@sha256:294b68...)". Those
+  # names change whenever versions.json changes - which is exactly what
+  # Renovate does. Requiring them directly would leave branch protection
+  # waiting forever for a check that will never report under its old name,
+  # blocking the very updates this automation exists to deliver.
+  #
+  # Requiring only this job avoids that. Its name never changes, and it fails
+  # if any job it depends on failed, was cancelled, or was skipped.
+  required:
+    name: required
+    needs: [lint, matrix, build]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Assert every prerequisite job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$RESULTS"
+          bad="$(printf '%s' "$RESULTS" \
+                 | jq -r 'to_entries[] | select(.value.result != "success")
+                          | "\(.key)=\(.value.result)"')"
+          if [ -n "$bad" ]; then
+            echo "::error::prerequisite job(s) did not succeed: $bad"
+            exit 1
+          fi
+          echo "All prerequisite jobs succeeded."
+
+  # ---------------------------------------------------------------------------
   fuse:
     needs: [matrix, build]
     if: github.event_name != 'pull_request'
