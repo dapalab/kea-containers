@@ -108,10 +108,33 @@ revoked, expired or soon-to-expire key. Since no real key currently expires,
 that warning could only ever have reported "healthy", so it too is driven by
 revoked and expiring fixtures in the test suite.
 
-**On the SHA-256 question.** See P2-1 in the review: the `sha256sum` line in
-this block computes a hash and compares it to nothing. The position argued
-above — that a signature over the bytes subsumes a hash fetched from the same
-server — is unchanged and still correct. The line is addressed separately.
+### Amendment, 2026-09-20 — the `sha256sum` line was theatre, and is gone
+
+The verification block used to end with:
+
+```dockerfile
+sha256sum kea.tar.xz; \
+```
+
+It printed a hash and compared it to nothing. **It could not fail.** In the
+most security-sensitive block in the build, in a repo whose recurring lesson
+is *an assertion that could not fail*, sitting where an auditor reads two
+independent checks and there is one.
+
+The substantive position above is unchanged and still correct: a valid
+signature over these exact bytes is strictly stronger than matching a hash
+fetched from the same server that served the tarball. So this was a fix to an
+honesty problem, not a cryptographic one.
+
+**The alternative was checked and is unavailable.** If ISC published a hash
+alongside the `.asc` we could fetch and actually compare it. Re-probed
+2026-09-20: `.sha256`, `.sha512` and `.SHA256` return 404 for **both** 3.2.0
+and 3.0.4, and the directory index lists only the tarball, its signature and
+the release notes. So deletion was the only option, and the Dockerfile now
+states in a comment that the absence of a hash assertion is deliberate.
+
+The rule this leaves behind: nothing in that block may look like a check and
+not be one.
 
 ---
 

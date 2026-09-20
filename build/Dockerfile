@@ -49,13 +49,21 @@ COPY verify-tarball.sh     /usr/local/bin/verify-tarball.sh
 # be tested, and an untested security check is the thing this repo keeps
 # learning not to ship. See that script's header for why `gpg --verify`
 # alone is not enough.
+#
+# There is deliberately NO separate SHA-256 assertion here. ISC publishes no
+# checksum files (re-confirmed 2026-09-20: .sha256, .sha512 and .SHA256 all
+# 404 for both 3.2.0 and 3.0.4), so any hash would be one we transcribed, and
+# a valid signature over these exact bytes is strictly stronger than matching
+# a hash fetched from the same server that served the tarball. This block
+# previously ended with a bare `sha256sum kea.tar.xz`, which printed a hash,
+# compared it to nothing, and could not fail - two checks to an auditor's eye
+# where there was one. See docs/DECISIONS.md D2.
 RUN set -eux; \
     test -n "${KEA_VERSION}"; \
     base="https://downloads.isc.org/isc/kea/${KEA_VERSION}"; \
     curl -fsSL -o kea.tar.xz     "${base}/kea-${KEA_VERSION}.tar.xz"; \
     curl -fsSL -o kea.tar.xz.asc "${base}/kea-${KEA_VERSION}.tar.xz.asc"; \
     verify-tarball.sh kea.tar.xz kea.tar.xz.asc isc-keyblock.asc; \
-    sha256sum kea.tar.xz; \
     mkdir -p src; \
     tar -xf kea.tar.xz -C src --strip-components=1
 
