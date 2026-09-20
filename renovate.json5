@@ -33,6 +33,13 @@
   prConcurrentLimit: 5,
   prHourlyLimit: 0,
 
+  // Use GitHub's native auto-merge rather than Renovate merging the PR itself.
+  // This matters because native auto-merge is enforced by branch protection:
+  // GitHub will not merge until the required 'required' check passes, whatever
+  // Renovate believes. Renovate's own merge logic checks statuses too, but it
+  // is Renovate policing itself; this is the platform policing it.
+  platformAutomerge: true,
+
   customManagers: [
     {
       // Kea version, per branch.
