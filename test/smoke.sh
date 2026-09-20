@@ -3,12 +3,14 @@
 #
 # Functional smoke test for the kea-dhcp4 image.
 #
-# Four gates, in increasing order of what they prove:
+# Six gates, in increasing order of what they prove:
 #   1. -V              the binary runs and reports its version
 #   2. -W              the build report is present and reports the expected
 #                      crypto backend and disabled DB backends
 #   3. -t <config>     config parsing works against a real configuration
 #   4. perfdhcp        a DHCPv4 DORA handshake actually completes
+#   5. every image     each published image starts and reports healthy
+#   6. kea-lfc         lease file cleanup actually compacts the lease file
 #
 # Gate 4 is the point. A test that only proves the binary starts is not enough
 # for a DHCP server.
@@ -27,6 +29,9 @@ SUBNET="172.31.77.0/24"
 SRV_IP="172.31.77.2"
 SRV="kea-smoke-dhcp4"
 CLI="kea-smoke-perfdhcp"
+LFC_SRV="kea-smoke-lfc"
+LFC_BAD="kea-smoke-lfc-broken"
+LFC_BAD_IMAGE="kea-smoke-lfc-broken:test"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$*"; }
@@ -34,8 +39,11 @@ fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; exit 1; }
 info() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 cleanup() {
-  docker rm -f "$SRV" "$CLI" >/dev/null 2>&1 || true
+  docker rm -f "$SRV" "$CLI" "$LFC_SRV" "$LFC_BAD" >/dev/null 2>&1 || true
+  docker rmi -f "$LFC_BAD_IMAGE" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
+  [ -n "${LFC_CONF:-}" ] && rm -f "$LFC_CONF"
+  return 0
 }
 trap cleanup EXIT
 cleanup
@@ -305,5 +313,148 @@ if docker image inspect "$ca_img" >/dev/null 2>&1 || docker pull -q "$ca_img" >/
 else
   printf '  \033[33mskip\033[0m  kea-ctrl-agent not built for this branch\n'
 fi
+
+###############################################################################
+info "Gate 6: kea-lfc actually compacts the lease file"
+###############################################################################
+# WHY THIS GATE EXISTS
+#     kea-lfc ships in dhcp4, dhcp6 and tools, and both shipped templates
+#     schedule it hourly - but nothing ever ran it. That is the same shape as
+#     the kea-ctrl-agent bug: present, configured, plausible, never executed.
+#
+# WHAT ACTUALLY FAILS, VERIFIED
+#     A MISSING kea-lfc is not the risk. kea-dhcp4 refuses to start without
+#     it - "DHCPSRV_MEMFILE_FAILED_TO_OPEN ... File not found: /usr/sbin/
+#     kea-lfc", DHCP4_INIT_FAIL - so gates 4 and 5 already cover that.
+#
+#     The real failure is a kea-lfc that is PRESENT and BROKEN: a missing
+#     shared library, a wrong-architecture binary, a directory it cannot
+#     write. Kea execs it and never checks the exit status, so:
+#
+#         container            : healthy
+#         logs                 : LFC_START / LFC_EXECUTE, no error at all
+#         lease file           : grows forever
+#
+#     Nothing surfaces until restart times degrade at week twelve.
+#
+# WHAT DISCRIMINATES, MEASURED
+#     working kea-lfc : kea-leases4.csv.2 holds the COMPACTED lease set
+#                       (one row per address), no .1 left behind
+#     broken kea-lfc  : no .2 at all; an unprocessed .1 and a stale .pid
+#
+#     So the assertion is on .2 existing AND being compacted - it can only
+#     get there by kea-lfc having run to completion.
+# Removed by cleanup(); deliberately NOT given its own trap, which would
+# replace the existing EXIT trap and leak the containers below.
+LFC_CONF="$(mktemp)"
+# mktemp creates 0600. The daemon runs as UID 10000, not as whoever runs this
+# script, so a bind-mounted 0600 config is unreadable inside the container and
+# Kea dies with "Unable to open file".
+chmod 0644 "$LFC_CONF"
+# Derived from the gate-4 config by sed rather than kept as a second file, so
+# the two cannot drift apart.
+sed 's|"persist": true|"persist": true,\n      "lfc-interval": 5|' \
+  "$HERE/kea-dhcp4-smoke.conf" > "$LFC_CONF"
+grep -q '"lfc-interval": 5' "$LFC_CONF" || fail "could not derive the LFC config"
+
+# Sets LS_ROWS / LS_UNIQ / LS_LEFTOVER / LS_PID for one container.
+# LS_ROWS is -1 when no compacted file exists at all.
+LS_ROWS=-1; LS_UNIQ=-1; LS_LEFTOVER="?"; LS_PID="?"
+read_lease_state() {
+  local out
+  out="$(docker exec "$1" sh -c '
+    d=/var/lib/kea
+    if [ -f "$d/kea-leases4.csv.2" ]; then
+      rows=$(tail -n +2 "$d/kea-leases4.csv.2" | grep -c . || true)
+      uniq=$(tail -n +2 "$d/kea-leases4.csv.2" | cut -d, -f1 | sort -u | grep -c . || true)
+    else
+      rows=-1; uniq=-1
+    fi
+    [ -f "$d/kea-leases4.csv.1" ] && one=yes || one=no
+    [ -f "$d/kea-leases4.csv.pid" ] && pid=yes || pid=no
+    echo "$rows $uniq $one $pid"' 2>/dev/null)" || out=""
+  [ -n "$out" ] || out="-1 -1 ? ?"
+  read -r LS_ROWS LS_UNIQ LS_LEFTOVER LS_PID <<<"$out"
+}
+
+run_lfc_server() {  # run_lfc_server <name> <ip> <image>
+  docker run -d --name "$1" --network "$NET" --ip "$2" \
+    -v "$LFC_CONF:/etc/kea/kea-dhcp4.conf:ro" "$3" >/dev/null
+  for _ in $(seq 1 30); do
+    case "$(docker logs "$1" 2>&1 || true)" in *DHCP4_STARTED*) return 0 ;; esac
+    sleep 1
+  done
+  docker logs "$1" 2>&1 | tail -10 | sed 's/^/      /'
+  return 1
+}
+
+# Wait for compaction rather than sleeping a fixed time: lfc-interval is 5s,
+# so this normally settles in ~10s, and a slow runner does not flake it.
+wait_for_compaction() {  # wait_for_compaction <container> <seconds>
+  local container="$1" limit="$2" n=0
+  while [ "$n" -lt "$limit" ]; do
+    read_lease_state "$container"
+    # Compacted means: a .2 exists, it holds the leases we drove in, and it
+    # holds exactly one row per address. A file with duplicate rows is a
+    # rotation that kea-lfc never finished processing.
+    if [ "$LS_ROWS" -ge 5 ] && [ "$LS_ROWS" = "$LS_UNIQ" ]; then
+      return 0
+    fi
+    n=$((n + 1)); sleep 1
+  done
+  return 1
+}
+
+docker rm -f "$SRV" >/dev/null 2>&1 || true   # free the gate-4 server's IP
+run_lfc_server "$LFC_SRV" "$SRV_IP" "$DHCP4_IMAGE" \
+  || fail "kea-dhcp4 did not start with lfc-interval set"
+pass "kea-dhcp4 started with lfc-interval=5"
+
+docker run --rm --name "$CLI" --network "$NET" "$TOOLS_IMAGE" \
+  /usr/sbin/perfdhcp -4 -R 20 -r 10 -n 50 -p 15 "$SRV_IP" >/dev/null 2>&1 || true
+
+if wait_for_compaction "$LFC_SRV" 60; then
+  pass "kea-lfc compacted the lease file ($LS_ROWS rows, $LS_UNIQ distinct addresses)"
+  [ "$LS_LEFTOVER" = "no" ] \
+    || fail "kea-leases4.csv.1 was left behind - LFC did not finish"
+else
+  read_lease_state "$LFC_SRV"
+  printf '      rows=%s distinct=%s leftover-.1=%s stale-pid=%s\n' \
+    "$LS_ROWS" "$LS_UNIQ" "$LS_LEFTOVER" "$LS_PID"
+  docker logs "$LFC_SRV" 2>&1 | grep -i lfc | tail -5 | sed 's/^/      /'
+  fail "kea-lfc never produced a compacted lease file"
+fi
+
+# NEGATIVE CONTROL. Without this the assertion above is just another green
+# tick: it has to be shown to go red when kea-lfc is broken, which is the
+# failure mode it exists for. kea-lfc is replaced by a stub that exits 1 -
+# present and executable, so Kea starts happily and reports healthy.
+# Empty build context on purpose: the Dockerfile has no COPY, and the repo
+# root would ship .git and everything else to the daemon for nothing.
+LFC_CTX="$(mktemp -d)"
+printf 'FROM %s\nUSER root\nRUN printf "#!/bin/sh\\nexit 1\\n" > /usr/sbin/kea-lfc \\\n && chmod 0755 /usr/sbin/kea-lfc\nUSER 10000:10000\n' \
+  "$DHCP4_IMAGE" | docker build -q -t "$LFC_BAD_IMAGE" -f - "$LFC_CTX" >/dev/null \
+  || { rmdir "$LFC_CTX"; fail "could not build the broken-kea-lfc control image"; }
+rmdir "$LFC_CTX"
+docker rm -f "$LFC_SRV" >/dev/null 2>&1 || true
+
+if run_lfc_server "$LFC_BAD" "$SRV_IP" "$LFC_BAD_IMAGE"; then
+  docker run --rm --name "$CLI" --network "$NET" "$TOOLS_IMAGE" \
+    /usr/sbin/perfdhcp -4 -R 20 -r 10 -n 40 -p 12 "$SRV_IP" >/dev/null 2>&1 || true
+  if wait_for_compaction "$LFC_BAD" 25; then
+    fail "negative control PASSED - the gate cannot detect a broken kea-lfc"
+  fi
+  read_lease_state "$LFC_BAD"
+  pass "negative control: broken kea-lfc detected (no compacted file; leftover-.1=$LS_LEFTOVER)"
+  # And confirm it really is silent, which is the point of the gate.
+  case "$(docker logs "$LFC_BAD" 2>&1 || true)" in
+    *ERROR*) printf '  \033[33mnote\033[0m  broken kea-lfc logged an ERROR after all\n' ;;
+    *) pass "confirmed: a broken kea-lfc logs no error and stays healthy" ;;
+  esac
+else
+  fail "the broken-kea-lfc control did not start (it is meant to start fine)"
+fi
+docker rm -f "$LFC_BAD" >/dev/null 2>&1 || true
+
 
 printf '\n\033[32mAll gates passed.\033[0m\n'

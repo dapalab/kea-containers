@@ -1010,3 +1010,68 @@ So the check has failed for the right reason, twice, before being trusted.
 shipping untested bytes, which is the correct direction for this failure to
 point. If a legitimate cache miss ever trips it, the fix is to rerun the job,
 not to weaken the assertion.
+
+---
+
+## D22 — Gate kea-lfc on compaction, not on the binary being present
+
+**Decision.** A sixth smoke gate runs `kea-dhcp4` with `lfc-interval: 5`,
+drives leases through it, and asserts the lease file was actually compacted —
+with a negative control that replaces `kea-lfc` with a stub that fails.
+
+**The gap.** `kea-lfc` ships in `dhcp4`, `dhcp6` and `tools`, and both shipped
+templates schedule it hourly, but nothing ever ran it. Same shape as the
+`kea-ctrl-agent` bug: present, configured, plausible, never executed. At
+`lfc-interval: 3600` it would not fire inside a CI run anyway.
+
+**The review's stated failure mode turned out to be wrong**, which changed the
+test. It expected that a `kea-lfc` which cannot be found "fails silently".
+Measured: it fails *loudly*, at startup, before serving anything —
+
+```
+DHCPSRV_MEMFILE_FAILED_TO_OPEN Could not open lease file:
+    File not found: /usr/sbin/kea-lfc
+DHCP4_INIT_FAIL failed to initialize Kea server
+```
+
+Gates 4 and 5 already cover that, because the daemon never reaches
+`DHCP4_STARTED`. Testing for a missing binary would have been another
+assertion that could not fail.
+
+**What does fail silently is a `kea-lfc` that is present and broken** — a
+missing shared library, a wrong-architecture binary, a directory it cannot
+write. Kea execs it and **never checks the exit status**. Measured against a
+stub that exits 1:
+
+| | working `kea-lfc` | broken `kea-lfc` |
+|---|---|---|
+| container | healthy | **healthy** |
+| logs | `LFC_START` / `LFC_EXECUTE` | **identical, no error** |
+| `kea-leases4.csv.2` (compacted) | present, one row per address | **absent** |
+| `kea-leases4.csv.1` left behind | no | **yes** |
+| stale `.pid` | no | **yes** |
+
+Nothing surfaces until the lease file has grown for weeks and restart times
+degrade.
+
+**So the assertion is on the compacted artifact**, not on the binary: `.2`
+must exist, hold the leases just driven in, and hold exactly one row per
+address. It can only reach that state by `kea-lfc` running to completion. A
+file with duplicate rows is a rotation that was never processed.
+
+**The negative control is part of the gate, not a one-off.** It builds a
+derived image with `kea-lfc` replaced by `exit 1`, confirms the assertion goes
+red, and confirms the failure really is silent. It runs on every CI run, on
+both architectures, so the gate cannot quietly stop discriminating.
+
+**Cost.** The full smoke suite goes from ~40s to ~81s. Waiting is a poll, not
+a fixed sleep, so a slow runner does not flake it.
+
+**Rejected: asserting on `LFC_*` log tokens.** Easier to match and weaker
+evidence — `DHCPSRV_MEMFILE_LFC_START` is emitted by `kea-dhcp4` *before* it
+execs `kea-lfc`, so it is logged identically when the binary is broken. It
+proves Kea tried, which is not the question.
+
+**Rejected: a second checked-in config.** The variant is derived from
+`test/kea-dhcp4-smoke.conf` with `sed`, so the two cannot drift.
+
