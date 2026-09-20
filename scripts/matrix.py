@@ -25,6 +25,9 @@ ARCHES = [
     {"arch": "amd64", "platform": "linux/amd64", "runner": "ubuntu-24.04"},
     {"arch": "arm64", "platform": "linux/arm64", "runner": "ubuntu-24.04-arm"},
 ]
+DOCKERFILE = ROOT / "build" / "Dockerfile"
+CONFIG_DIR = ROOT / "build" / "config"
+STAGE = re.compile(r"^FROM\s+\S+\s+AS\s+(\S+)\s*$", re.M)
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 DIGEST = re.compile(r"^alpine:[\w.]+@sha256:[0-9a-f]{64}$")
 
@@ -54,6 +57,24 @@ def check():
             errors.append(f"{where}.images: empty")
         if "ctrl-agent" in b.get("images", []) and bid != "3.0":
             errors.append(f"{where}.images: kea-ctrl-agent was removed upstream after 3.0")
+    # Every image named in versions.json must have a matching Dockerfile stage
+    # and a config template. Without this, a typo or a forgotten stage only
+    # surfaces after Kea has already compiled for 25 minutes in CI - which is
+    # exactly how the missing ctrl-agent stage was found.
+    stages = set(STAGE.findall(DOCKERFILE.read_text()))
+    for bid, b in branches.items():
+        for img in b.get("images", []):
+            if img not in stages:
+                errors.append(
+                    f"branches.{bid}.images: no 'FROM ... AS {img}' stage in "
+                    f"build/Dockerfile (have: {', '.join(sorted(stages))})"
+                )
+            # kea-tools ships no daemon config; everything else must have one.
+            if img != "tools" and not (CONFIG_DIR / f"kea-{img}.conf").exists():
+                errors.append(
+                    f"branches.{bid}.images: missing build/config/kea-{img}.conf"
+                )
+
     lts = [b for b in branches.values() if b.get("lts")]
     if len(lts) > 1:
         errors.append("more than one branch marked lts")

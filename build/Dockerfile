@@ -177,6 +177,36 @@ VOLUME ["/etc/kea"]
 CMD ["/usr/sbin/kea-dhcp-ddns", "-c", "/etc/kea/kea-dhcp-ddns.conf"]
 
 ###############################################################################
+# kea-ctrl-agent  (Kea 3.0 ONLY)
+#
+# Removed upstream in 3.2, once the daemons gained native HTTP/TLS control
+# sockets. versions.json carries a per-branch image list precisely so this
+# stage is only ever built for 3.0; building it against 3.2 sources will fail
+# at the COPY below, which is the correct and loud outcome.
+#
+# Needs no capabilities: port 8000 is above 1024.
+#
+# It must share /run/kea with the daemons it proxies, so /run/kea is left as a
+# declared volume rather than a private directory.
+###############################################################################
+FROM runtime-base AS ctrl-agent
+COPY --from=builder /stage/usr/sbin/kea-ctrl-agent /usr/sbin/kea-ctrl-agent
+COPY config/kea-ctrl-agent.conf /etc/kea/kea-ctrl-agent.conf
+
+# The agent speaks HTTP, not a unix socket, so the probe has to be a real HTTP
+# request - piping bare JSON at it does not work.
+#
+# Success is any HTTP status line. That is deliberate: a 401 from an agent with
+# authentication enabled still proves the server is alive and answering, and
+# the healthcheck has no business holding credentials.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["sh", "-c", "b='{\"command\":\"version-get\"}'; printf 'POST / HTTP/1.0\\r\\nContent-Type: application/json\\r\\nContent-Length: %d\\r\\n\\r\\n%s' ${#b} \"$b\" | nc -w3 127.0.0.1 8000 | grep -q '^HTTP/'"]
+USER 10000:10000
+EXPOSE 8000/tcp
+VOLUME ["/etc/kea", "/run/kea"]
+CMD ["/usr/sbin/kea-ctrl-agent", "-c", "/etc/kea/kea-ctrl-agent.conf"]
+
+###############################################################################
 # kea-tools - perfdhcp, kea-shell, kea-admin, keactrl
 #
 # Not a daemon. Exists so users have the administrative tooling ISC's images
