@@ -61,9 +61,30 @@ check_report() {
     fail "$1 (pattern: $2)"
   fi
 }
-check_report "OpenSSL is the crypto backend" 'crypto.*openssl|openssl.*[0-9]'
-check_report "MySQL backend absent"          'MySQL:( |\t)*(no|disabled)?$|MySQL.*no'
-check_report "PostgreSQL backend absent"     'PostgreSQL:( |\t)*(no|disabled)?$|PostgreSQL.*no'
+check_report "OpenSSL is the crypto backend" 'OpenSSL:.*[0-9]'
+
+# The DB backends are compiled in. The daemon links libmariadb and libpq
+# directly - it never shells out to the mysql/psql CLI tools, which is why
+# those clients are not in any image. See docs/DECISIONS.md D13.
+check_report "MySQL backend compiled in"      'MySQL:[[:space:]]+[^n]'
+check_report "PostgreSQL backend compiled in" 'PostgreSQL:[[:space:]]+[^n]'
+
+# Prove the backend is actually registered, not merely reported. A config
+# naming an uncompiled backend is rejected at parse time, so acceptance here
+# means the lease manager really knows about it.
+for be in mysql postgresql; do
+  cfg="{\"Dhcp4\":{\"interfaces-config\":{\"interfaces\":[]},\"lease-database\":{\"type\":\"$be\",\"name\":\"kea\",\"host\":\"db.invalid\",\"user\":\"u\",\"password\":\"p\"},\"subnet4\":[]}}"
+  out="$(printf '%s' "$cfg" | docker run --rm -i "$DHCP4_IMAGE" \
+          sh -c 'cat > /tmp/db.conf; /usr/sbin/kea-dhcp4 -t /tmp/db.conf' 2>&1 || true)"
+  # -t does not dial the database, so an unreachable host is fine here. What
+  # we are ruling out is "unknown backend type", which is what an uncompiled
+  # backend produces.
+  if grep -qiE 'unsupported database type|not supported|unknown backend|invalid type' <<<"$out"; then
+    printf '%s\n' "$out" | sed 's/^/      /'
+    fail "$be backend is not registered in the lease manager"
+  fi
+  pass "$be backend registered in the lease manager"
+done
 
 ###############################################################################
 info "Gate 3: config validation (-t)"

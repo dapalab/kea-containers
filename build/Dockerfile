@@ -25,6 +25,7 @@ ARG BUILD_JOBS=3
 RUN apk add --no-cache \
         build-base meson ninja-build pkgconf \
         boost-dev log4cplus-dev openssl-dev \
+        mariadb-connector-c-dev libpq-dev \
         bison flex python3 linux-headers \
         curl gnupg tar xz
 
@@ -55,7 +56,14 @@ WORKDIR /build/src
 # Every optional dependency is pinned explicitly. They default to 'auto' in
 # meson.options, which would silently enable a backend if a -dev package
 # happened to be present - making the image contents depend on the build
-# environment rather than on this file.
+# environment rather than on this file. Pinning means 'enabled' here is a
+# decision, and a missing dependency is a hard failure rather than a silent
+# downgrade to memfile-only.
+#
+# MySQL and PostgreSQL cost ~1 MB on the runtime image (mariadb-connector-c
+# plus libpq) and nothing at runtime if unused, so they are built in. NETCONF
+# and Kerberos stay off: both pull substantially more weight for features this
+# audience does not use.
 #
 # install_umask=0022 is REQUIRED for Kea 3.0 and harmless for 3.2.
 #
@@ -78,8 +86,8 @@ RUN set -eux; \
         -D crypto=openssl \
         -D cpp_std=c++17 \
         -D install_umask=0022 \
-        -D mysql=disabled \
-        -D postgresql=disabled \
+        -D mysql=enabled \
+        -D postgresql=enabled \
         -D netconf=disabled \
         -D krb5=disabled \
         -D tests=disabled \
@@ -88,6 +96,20 @@ RUN set -eux; \
     DESTDIR=/stage meson install -C build --no-rebuild --quiet; \
     install -D -m 0644 COPYING /stage/usr/share/licenses/kea/COPYING; \
     install -D -m 0644 AUTHORS /stage/usr/share/licenses/kea/AUTHORS
+
+###############################################################################
+# db-clients - source stage for the two CLI tools kea-admin shells out to
+#
+# kea-admin invokes `mysql` (30 call sites) and `psql` (5). Installing the full
+# mariadb-client package costs 65 MB, because it is seven near-identical ~5 MB
+# binaries (mariadb-dump, mariadb-check, mariadb-import, ...) that kea-admin
+# never calls. Copying just the two we need costs 8.8 MB, measured.
+#
+# Their other dependencies - libcrypto, libssl, libstdc++, libz, libgcc - are
+# already present in runtime-base, so they add nothing.
+###############################################################################
+FROM ${ALPINE_REF} AS db-clients
+RUN apk add --no-cache mariadb-client postgresql17-client
 
 ###############################################################################
 # runtime-base - one shared layer behind every published image
@@ -105,7 +127,8 @@ ARG KEA_UID=10000
 ARG KEA_GID=10000
 
 RUN set -eux; \
-    apk add --no-cache libstdc++ log4cplus libcrypto3 libssl3 tzdata netcat-openbsd; \
+    apk add --no-cache libstdc++ log4cplus libcrypto3 libssl3 tzdata \
+        netcat-openbsd mariadb-connector-c libpq; \
     addgroup -S -g "${KEA_GID}" kea; \
     adduser -S -u "${KEA_UID}" -G kea -H -s /sbin/nologin kea; \
     mkdir -p /etc/kea /var/lib/kea /run/kea; \
@@ -226,6 +249,10 @@ CMD ["/usr/sbin/kea-ctrl-agent", "-c", "/etc/kea/kea-ctrl-agent.conf"]
 # omit (their issue #46: schema updates impossible, kea-admin missing), and so
 # CI has a first-class way to drive the perfdhcp functional test.
 #
+# kea-admin ships WITH the mysql and psql clients it shells out to, and with
+# the schema SQL. A tool that is present but cannot perform its own primary
+# function is worse than an absent one - it is a trap for whoever finds it.
+#
 # kea-shell is deliberately NOT included. It is a standalone Python client for
 # the control API and nothing depends on it: HA runs inside the daemons via
 # libdhcp_ha.so with peers talking HTTP directly, and DDNS is the daemons
@@ -240,6 +267,18 @@ COPY --from=builder /stage/usr/sbin/perfdhcp   /usr/sbin/perfdhcp
 COPY --from=builder /stage/usr/sbin/kea-lfc    /usr/sbin/kea-lfc
 COPY --from=builder /stage/usr/sbin/kea-admin  /usr/sbin/kea-admin
 COPY --from=builder /stage/usr/sbin/keactrl    /usr/sbin/keactrl
+# Schema creation and upgrade scripts for the DB backends. Small, plain SQL,
+# and the thing people actually need when standing up a MySQL/PostgreSQL
+# lease database. See the note above about the CLI clients.
+COPY --from=builder /stage/usr/share/kea/scripts/ /usr/share/kea/scripts/
+
+# The CLI clients kea-admin needs to be a working tool rather than a trap.
+# `mysql` is MariaDB's compatibility name for the same binary; it prints a
+# deprecation notice on stderr only, so kea-admin's stdout parsing is unaffected.
+RUN apk add --no-cache libncursesw readline
+COPY --from=db-clients /usr/bin/mariadb /usr/bin/mariadb
+COPY --from=db-clients /usr/bin/psql    /usr/bin/psql
+RUN ln -sf /usr/bin/mariadb /usr/bin/mysql
 RUN set -eux; \
     apk add --no-cache --virtual .setcap libcap; \
     setcap cap_net_raw,cap_net_bind_service=+ep /usr/sbin/perfdhcp; \
