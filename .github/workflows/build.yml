@@ -37,6 +37,7 @@ on:
       # NOT listed - a change to it must rebuild.
       - '.github/workflows/renovate.yml'
       - '.github/workflows/upstream-watch.yml'
+      - '.github/workflows/build-skip.yml'
   pull_request:
   schedule:
     # Weekly rebuild so Alpine security fixes land without a Kea release.

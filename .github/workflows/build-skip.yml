@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Companion to build.yml, and the answer to a deadlock that is easy to create
+# and confusing to diagnose.
+#
+# build.yml has paths-ignore so documentation changes do not trigger a
+# 25-minute four-job rebuild. Branch protection requires a check named
+# 'required', which build.yml provides.
+#
+# Those two facts collide: a pull request touching ONLY ignored paths never
+# triggers build.yml, so 'required' never reports, so branch protection blocks
+# the PR forever. A human can bypass it; Renovate cannot - and because
+# renovate.yml and upstream-watch.yml are themselves ignored paths, a Renovate
+# PR bumping an action SHA in one of them would hang on automerge indefinitely.
+#
+# This workflow has the EXACT INVERSE path filter and supplies a passing
+# 'required' check for precisely the cases build.yml skips. The two filters
+# must be kept in sync; if you add a path to one, add it to the other.
+name: build
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'examples/**'
+      - '*.md'
+      - 'NOTICE'
+      - 'LICENSE'
+      - 'renovate.json5'
+      - '.github/workflows/renovate.yml'
+      - '.github/workflows/upstream-watch.yml'
+      - '.github/workflows/build-skip.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  required:
+    name: required
+    runs-on: ubuntu-24.04
+    steps:
+      - name: No image-affecting files changed
+        run: |
+          echo "Only documentation or non-build workflow files changed."
+          echo "No image can be affected, so the build matrix is skipped."
+          echo "Reporting 'required' as passing so branch protection is satisfied."
