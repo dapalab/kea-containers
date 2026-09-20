@@ -95,7 +95,11 @@ RUN set -eux; \
     addgroup -S -g "${KEA_GID}" kea; \
     adduser -S -u "${KEA_UID}" -G kea -H -s /sbin/nologin kea; \
     mkdir -p /etc/kea /var/lib/kea /run/kea; \
-    chown kea:kea /var/lib/kea /run/kea
+    chown kea:kea /var/lib/kea /run/kea; \
+    # Kea 3.x refuses to use a unix control socket whose directory is more
+    # permissive than 0750, and refuses a lease directory it does not trust.
+    # A default 0755 from mkdir is rejected at config-parse time.
+    chmod 0750 /run/kea /var/lib/kea
 
 # Shared Kea libraries + hook libraries, and the licence texts we are obliged
 # to redistribute with the binaries (Kea is MPL-2.0).

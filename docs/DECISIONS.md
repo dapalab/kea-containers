@@ -248,3 +248,86 @@ purely via pkg-config (`dependency('mariadb')`, `dependency('libpq')`), so
 there is no `pg_config` hunting. This is close enough to free that the non-goal
 is worth revisiting — recorded here so the decision is informed rather than
 inherited.
+
+---
+
+## Phase 1 measured results
+
+Built and tested on the development machine (Intel N97, 4 cores, 5.7 GB RAM,
+WSL2) for `linux/amd64`, Kea 3.2.0 on Alpine 3.24.
+
+### Build
+
+| | |
+|---|---|
+| Kea compile (652 objects, `-j3`) | **51 min** |
+| Each runtime image after that | **2-10 s** |
+
+The compile is cached as a single builder stage, so building all four images
+costs one compile — confirmed by `#13 CACHED` on every subsequent target. This
+is the measurement that justifies D3 and D4: fanning out per image or per
+repository would have cost four compiles instead of one.
+
+### Image sizes
+
+| Image | Reported | Notes |
+|---|---|---|
+| `kea-dhcp-ddns` | 58 MB | |
+| `kea-dhcp6` | 68 MB | |
+| `kea-dhcp4` | 68 MB | |
+| `kea-tools` | 122 MB | `python3` for `kea-shell` accounts for most of the difference |
+
+Transfer size tells the more useful story:
+
+| | |
+|---|---|
+| `kea-dhcp4` alone | 18.9 MB |
+| All four together | **42.2 MB** |
+
+Four layers are shared by all four images (Alpine base, runtime packages, the
+`libkea-*` stack, licences). Pulling all four therefore costs roughly 2.2x one
+image rather than 4x — the marginal cost of each extra image is its binary,
+plus `python3` in the case of `kea-tools`.
+
+### Two bugs the tests caught
+
+Both are recorded because they are the kind of thing that would otherwise have
+surfaced in production.
+
+**1. Kea 3.x rejects a control-socket directory more permissive than 0750.**
+`mkdir -p` leaves 0755, and Kea refuses it at config-parse time with
+`socket path:/run/kea does not exist or has more relaxed permissions than 750`.
+This is the same security-policy change behind ISC's kea-docker#45. Fixed by an
+explicit `chmod 0750` on `/run/kea` and `/var/lib/kea`.
+
+**2. `set -o pipefail` plus `grep -q` is a latent race.** `grep -q` exits at the
+first match, `docker logs` upstream takes SIGPIPE, and pipefail reports the
+pipeline as failed even though the match succeeded. The readiness check passed
+only by luck and would have been flaky in CI. Logs are now captured to a
+variable and matched with `case`.
+
+### Claims verified, not assumed
+
+| Claim | Result |
+|---|---|
+| Daemons run as non-root | `uid=10000(kea)` |
+| File capabilities present | `cap_net_bind_service,cap_net_raw=ep` |
+| Healthcheck reports healthy | all three daemon images |
+| `--cap-drop=ALL` breaks dhcp4 | `exec: operation not permitted` |
+| Re-adding both capabilities works | starts normally as UID 10000 |
+| `CAP_NET_RAW` alone is insufficient | fails - **both** are genuinely required |
+| DHCPv4 DORA completes | 49/49 REQUEST-ACK, ~0.7 ms average |
+
+The capability failure mode is worth noting: a binary carrying file
+capabilities that are absent from the bounding set fails at `exec` with
+`operation not permitted`. It is a loud failure rather than a silent
+degradation to a daemon that cannot bind, which is the better outcome.
+
+### Known limitation
+
+The functional test forces `dhcp-socket-type: udp` so that perfdhcp can unicast
+to the server on a bridge network. It therefore does **not** exercise the raw
+socket path that a real macvlan deployment uses. Testing raw sockets requires
+an L2 segment with broadcast, which is not reproducible in a standard CI
+sandbox. The `CAP_NET_RAW` grant is verified separately (see above), but the
+broadcast path itself is not covered.
