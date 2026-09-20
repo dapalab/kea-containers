@@ -229,6 +229,34 @@ curl -s -u admin:$PASS -H 'Content-Type: application/json' \
 > to each other; DDNS is the DHCP daemons sending name-change requests to
 > `kea-dhcp-ddns` over UDP/53001. The control API is for administration only.
 
+## Dynamic DNS with BIND9
+
+`kea-dhcp-ddns` supports **TSIG (RFC 2845)** out of the box — the shared-HMAC-key
+mechanism BIND9, NSD, Knot and PowerDNS all use for secure dynamic updates. It
+is compiled into the daemon; no hook library is involved.
+
+```bash
+tsig-keygen -a HMAC-SHA256 kea-ddns-key
+```
+
+Put the key in `named.conf` with `allow-update { key "kea-ddns-key"; };` on the
+zone, and give Kea the secret **as a file** — Kea 3.x rejects a clear-text
+`secret` with *"use of clear text TSIG 'secret' is NOT SECURE"*:
+
+```bash
+printf '%s' 'YOUR_BASE64_SECRET' > ddns-key.secret
+chmod 600 ddns-key.secret && sudo chown 10000:10000 ddns-key.secret
+docker run -v ./ddns-key.secret:/etc/kea/ddns-key.secret:ro ...
+```
+
+A complete worked configuration, covering both the Kea and BIND9 sides, is in
+[`examples/kea-dhcp-ddns-bind9.conf`](examples/kea-dhcp-ddns-bind9.conf).
+
+> **GSS-TSIG is a different thing.** RFC 3645, Kerberos/GSSAPI-based, used
+> mainly with Active Directory DNS. It needs a KDC, a `krb5.conf` and a keytab.
+> ISC's DDNS image bundles it; these images do not, because BIND9 does not use
+> it. If you need it, open an issue — it is roughly 2 MB and one build flag.
+
 ## Deviations from ISC's images
 
 Everything here is a deliberate choice, recorded with reasoning in
@@ -243,7 +271,7 @@ Everything here is a deliberate choice, recorded with reasoning in
 | 5 | Base image `alpine:3.24`, unpinned | Pinned by digest | Reproducibility |
 | 6 | No healthcheck | `HEALTHCHECK` via control socket | Orchestrator integration |
 | 7 | Installs from ISC's apk repo (x86_64) | Compiles from verified source | Enables arm64 |
-| 8 | DDNS image includes GSS-TSIG | Not included in v1 | Kerberos dependency; tracked for v2 |
+| 8 | DDNS image includes GSS-TSIG | Not included | GSS-TSIG is Kerberos-based (RFC 3645), for AD DNS. BIND9 and friends use plain TSIG (RFC 2845), which **is** supported — see [DDNS](#dynamic-dns-with-bind9) |
 | 9 | No `kea-admin` in any image | `kea-tools` image | Closes kea-docker#46 |
 
 ## Supply chain

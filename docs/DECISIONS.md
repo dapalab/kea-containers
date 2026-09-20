@@ -138,10 +138,22 @@ dependency happens to be present. Left alone, the contents of the image would
 depend on which `-dev` packages the builder stage happened to install — a
 reproducibility hazard that is invisible until it bites.
 
-**Known deviation.** ISC's `kea-dhcp-ddns` image installs `isc-kea-gss-tsig`.
-We disable `krb5`, so our DDNS image has no GSS-TSIG support. This is an
-open-source hook, not a premium one, so it is a genuine functional gap rather
-than a licensing one. Flagged for v2.
+**Known deviation, deliberately kept.** ISC's `kea-dhcp-ddns` image installs
+`isc-kea-gss-tsig`. We disable `krb5`, so our DDNS image has no GSS-TSIG hook.
+
+This was initially flagged for v2 as a functional gap. On investigation it is
+not one for the intended audience:
+
+- **GSS-TSIG** (RFC 3645) is Kerberos/GSSAPI-based and is used mainly with
+  Active Directory DNS. It requires a KDC, a `krb5.conf` and a keytab.
+- **TSIG** (RFC 2845) is the shared-HMAC-key mechanism BIND9, NSD, Knot and
+  PowerDNS use. It is **compiled into `kea-dhcp-ddns`**, not a hook, and works
+  in our image today — verified by validating a full forward+reverse TSIG
+  configuration against it.
+
+Cost to enable GSS-TSIG if ever wanted, `kea-dhcp-ddns` only: `krb5-dev`
+706 KiB at build, `krb5-libs` 1.7 MB (amd64) / 2.3 MB (arm64) at runtime, plus
+one meson flag. Cheap, but pointless for a BIND9 deployment.
 
 ---
 
