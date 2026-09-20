@@ -56,6 +56,18 @@ WORKDIR /build/src
 # meson.options, which would silently enable a backend if a -dev package
 # happened to be present - making the image contents depend on the build
 # environment rather than on this file.
+#
+# install_umask=0022 is REQUIRED for Kea 3.0 and harmless for 3.2.
+#
+# Kea 3.0.x sets 'install_umask=0027' in its project() default_options, which
+# installs every library as 0750 root:root. Our daemons run as UID 10000 and
+# cannot read them, so kea-dhcp4 dies at startup with
+# "Error loading shared library libkea-util.so.103: Permission denied".
+# ISC never hits this because their images run as root.
+#
+# Kea 3.2 dropped the global umask in favour of explicit install_mode on the
+# state directories only, so it already installs 0755. Setting this explicitly
+# gives both branches identical, intentional permissions.
 RUN set -eux; \
     meson setup build \
         --prefix=/usr \
@@ -65,6 +77,7 @@ RUN set -eux; \
         -D runstatedir=/run \
         -D crypto=openssl \
         -D cpp_std=c++17 \
+        -D install_umask=0022 \
         -D mysql=disabled \
         -D postgresql=disabled \
         -D netconf=disabled \

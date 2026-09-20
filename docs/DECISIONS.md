@@ -365,3 +365,46 @@ socket path that a real macvlan deployment uses. Testing raw sockets requires
 an L2 segment with broadcast, which is not reproducible in a standard CI
 sandbox. The `CAP_NET_RAW` grant is verified separately (see above), but the
 broadcast path itself is not covered.
+
+---
+
+## D14 — `install_umask=0022` (found the hard way)
+
+**Decision.** Pass `-D install_umask=0022` to `meson setup`.
+
+**Why.** Kea **3.0.x** sets `'install_umask=0027'` in its `project()`
+`default_options`. That installs every library as `0750 root:root`. Our daemons
+run as UID 10000, so they cannot read their own libraries and die at startup
+with:
+
+```
+Error loading shared library libkea-util.so.103: Permission denied
+Error relocating /usr/sbin/kea-dhcp4: ... symbol not found
+```
+
+The relocation errors are a red herring — they are downstream of the loader
+failing to open the libraries at all.
+
+**Kea 3.2 removed that global umask**, replacing it with explicit
+`install_mode: 'rwxr-x---'` on the state directories only. So 3.2 installs
+0755 and works, while 3.0 does not. This is why the CI matrix failed on exactly
+one branch, on both architectures.
+
+**ISC never hits this** because their images run everything as root. It is a
+direct consequence of D8 (non-root), and a good example of why the two stable
+branches cannot be assumed to build identically.
+
+**Verified rather than assumed**, with a minimal Meson project:
+
+| | installed mode |
+|---|---|
+| `install_umask=0027` | `750` |
+| `install_umask=0022` | `755` |
+| `project()` says `0027`, CLI passes `0022` | **`755`** — CLI wins |
+
+That last row is the one that matters: Kea sets the value in `default_options`,
+and a command-line `-D` overrides it.
+
+Setting it explicitly for both branches is deliberate. It makes the permissions
+an intentional property of our build rather than something inherited from
+whichever upstream branch we happen to be compiling.
