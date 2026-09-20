@@ -39,6 +39,21 @@ on:
       - '.github/workflows/upstream-watch.yml'
       - '.github/workflows/build-skip.yml'
   pull_request:
+    # Same filter as the push trigger. Without it a documentation PR
+    # runs the full four-job matrix for nothing. build-skip.yml carries
+    # the exact inverse filter and supplies the 'required' check that
+    # branch protection needs, so skipping here cannot leave a PR
+    # unmergeable.
+    paths-ignore:
+      - 'docs/**'
+      - 'examples/**'
+      - '*.md'
+      - 'NOTICE'
+      - 'LICENSE'
+      - 'renovate.json5'
+      - '.github/workflows/renovate.yml'
+      - '.github/workflows/upstream-watch.yml'
+      - '.github/workflows/build-skip.yml'
   schedule:
     # Weekly rebuild so Alpine security fixes land without a Kea release.
     - cron: '17 4 * * 1'
