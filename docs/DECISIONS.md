@@ -609,3 +609,42 @@ Each link is checkable by someone who trusts none of the others.
 **What it does not claim.** Only origin and integrity. It says nothing about
 ISC endorsing these images - which is precisely the point, since the useful
 question about an unofficial image is *who actually built this*.
+
+---
+
+## D19 — No DHCPv6 functional test (known gap)
+
+**Decision.** `kea-dhcp6` is covered by gate 5 (starts, control socket answers)
+but there is no automated SARR exchange test. This is deliberate.
+
+**Why it was attempted and abandoned.** DHCPv6 is architecturally
+multicast-based: clients send SOLICIT to `ff02::1:2` from a link-local address
+on a real L2 segment. Docker's bridge IPv6 does not reproduce that. A prototype
+showed two distinct problems:
+
+1. **Kea failed to bind its link-local multicast socket** on startup -
+   `Failed to bind socket to fe80::.../port=547: Address not available`. This
+   is a duplicate-address-detection race: the container's link-local address is
+   still tentative when Kea starts. A 5-second delay before starting Kea makes
+   it go away, which confirms the diagnosis.
+2. **Even with sockets open, perfdhcp received nothing** - 20 SOLICIT sent, 0
+   ADVERTISE received, because the unicast coercion needed to avoid multicast
+   does not match how Kea expects to be addressed.
+
+Pursuing it further would mean a test carrying a `sleep` for DAD plus
+increasingly artificial addressing. At that point it exercises **our
+workarounds**, not the image.
+
+**This is the same wall as the v4 raw-socket path.** The v4 functional gate
+uses `dhcp-socket-type: udp` because a Docker bridge has no broadcast. Accepting
+the equivalent limit for v6 is consistent with that, not a lower standard.
+
+**What is covered regardless.** Gate 5 proves the daemon starts with its
+shipped config and answers its control socket. The v4 DORA test exercises the
+shared `libkea` stack - allocation engine, lease manager, configuration parsing
+- which v6 uses too. What remains uncovered is the v6 packet layer specifically.
+
+**Where it should be validated: real hardware**, on an L2 segment, exactly as
+the v4 raw-socket path was validated on a Raspberry Pi. Documented here rather
+than hidden so anyone relying on the v6 image knows precisely what CI does and
+does not prove.
