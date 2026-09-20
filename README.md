@@ -164,15 +164,44 @@ Named volumes do not have this problem — Docker sets ownership from the image.
 
 ## Configuration
 
-The config baked into each image is **deliberately inert**: it defines no
-subnets, so the daemon starts, logs and answers its control socket but will
-never offer a lease. Mount your own config before putting it on a network.
+Each image ships a **commented configuration template** at its normal config
+path. It is safe as-is — no subnets are defined, so the daemon starts, logs and
+answers its control socket but will never offer a lease — and it doubles as the
+reference for building a real config.
+
+Start from the copy inside the image you already pulled:
+
+```bash
+docker run --rm ghcr.io/dapalab/kea-dhcp4:3.2 \
+  cat /etc/kea/kea-dhcp4.conf > kea-dhcp4.conf
+
+$EDITOR kea-dhcp4.conf     # uncomment and fill in the subnet block
+
+docker run --rm -v ./kea-dhcp4.conf:/tmp/c.conf:ro \
+  ghcr.io/dapalab/kea-dhcp4:3.2 kea-dhcp4 -t /tmp/c.conf   # validate first
+
+docker run -d --name kea4 --network dhcp-net \
+  -v ./kea-dhcp4.conf:/etc/kea/kea-dhcp4.conf:ro \
+  -v kea-leases:/var/lib/kea \
+  ghcr.io/dapalab/kea-dhcp4:3.2
+```
+
+Kea accepts `//` and `/* */` comments, so you can uncomment blocks in place.
+The same files are browsable in the repository at
+[`build/config/`](build/config/) — they are not copies, they are the exact
+files baked into the images.
+
+The templates cover what a homelab actually needs: subnets and pools, host
+reservations by MAC, per-reservation options, global reservations for roaming
+clients, DDNS wiring, prefix delegation and DUID reservations for v6, TSIG keys
+for DDNS, and a guide to the open-source hook libraries worth knowing about
+(`lease_cmds`, `ha`, `flex_id`, `run_script`, `ping_check`, `subnet_cmds`).
 
 This differs from ISC's images, which ship a live `192.168.50.0/24` pool bound
 to `eth0`. A DHCP server that starts up already willing to hand out addresses
 is a poor default for an image intended to run on macvlan.
 
-Working examples are in [`examples/`](examples/).
+Fully worked examples are in [`examples/`](examples/).
 
 ## Talking to the control API
 

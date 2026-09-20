@@ -174,11 +174,24 @@ that is documented in the README.
 
 ---
 
-## D9 — Ship inert default configs
+## D9 — Ship a commented template as the default config
 
-**Decision.** The default config baked into each image defines no subnets and
-no DDNS domains. The daemon starts, logs and answers its control socket, but
-serves nothing.
+**Decision.** The default config baked into each image is a heavily commented
+template. It defines no subnets and no DDNS domains, so the daemon starts, logs
+and answers its control socket but serves nothing.
+
+**Why a template rather than a bare minimal config.** An empty config is safe
+but teaches nothing — it gives you no idea how to express a pool, a
+reservation, or DDNS wiring, which is most of what someone setting this up
+actually needs. The template is the same file in the repository
+(`build/config/`) and in the image, so there is one artifact to maintain and it
+is reachable either by browsing the repo or by `cat`-ing it out of an image you
+have already pulled.
+
+**Verified, not assumed.** The example subnet block was mechanically
+uncommented, retargeted at a test network and run: 9/9 REQUEST-ACK with leases
+allocated from the pool. A template whose example is subtly wrong would be
+worse than no template at all.
 
 **Why this deviates from ISC.** ISC's images ship a live `192.168.50.0/24` pool
 bound to `eth0`. A DHCP server that starts already willing to hand out
