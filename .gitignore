@@ -3,3 +3,7 @@
 /out/
 /.cache/
 *.log
+
+# py_compile in the lint job writes these; they are build output.
+__pycache__/
+*.pyc
