@@ -516,6 +516,7 @@ permission those PRs fail with a confusing push rejection.
 | Alpine **digest** | yes | This is how Alpine security fixes reach the images between releases. |
 | Alpine **tag** (3.24 → 3.25) | no | A new Alpine release can move compiler and library versions underneath the build. 7-day age. |
 | GitHub Actions | yes | Grouped, SHA-pinned, 3-day age. |
+| **Runner images** (`ubuntu-24.04`) | **no** | Renovate's github-actions manager also tracks `runs-on:`. A dry run caught it grouping these in with action bumps, where they would have been automerged - silently changing the OS the build runs on. 30-day age. |
 
 ### Per-branch constraints
 
