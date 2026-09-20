@@ -69,21 +69,52 @@ check_report "OpenSSL is the crypto backend" 'OpenSSL:.*[0-9]'
 check_report "MySQL backend compiled in"      'MySQL:[[:space:]]+[^n]'
 check_report "PostgreSQL backend compiled in" 'PostgreSQL:[[:space:]]+[^n]'
 
-# Prove the backend is actually registered, not merely reported. A config
-# naming an uncompiled backend is rejected at parse time, so acceptance here
-# means the lease manager really knows about it.
-for be in mysql postgresql; do
-  cfg="{\"Dhcp4\":{\"interfaces-config\":{\"interfaces\":[]},\"lease-database\":{\"type\":\"$be\",\"name\":\"kea\",\"host\":\"db.invalid\",\"user\":\"u\",\"password\":\"p\"},\"subnet4\":[]}}"
-  out="$(printf '%s' "$cfg" | docker run --rm -i "$DHCP4_IMAGE" \
-          sh -c 'cat > /tmp/db.conf; /usr/sbin/kea-dhcp4 -t /tmp/db.conf' 2>&1 || true)"
-  # -t does not dial the database, so an unreachable host is fine here. What
-  # we are ruling out is "unknown backend type", which is what an uncompiled
-  # backend produces.
-  if grep -qiE 'unsupported database type|not supported|unknown backend|invalid type' <<<"$out"; then
-    printf '%s\n' "$out" | sed 's/^/      /'
-    fail "$be backend is not registered in the lease manager"
+# In Kea 3.x the DB backends are HOOK LIBRARIES, not built into the daemon.
+# This is why `kea-dhcp4 -V` lists only memfile: it shows REGISTERED backends,
+# and the DB ones register when their hook loads.
+#
+# Note what does NOT work as a test: `-t` with "type": "mysql" and no hook
+# exits 0, because -t validates the backend NAME against a known list rather
+# than its availability. (A bogus name like "notarealdb" does exit 1.) So an
+# accepted config proves nothing about whether the backend was built.
+#
+# What does discriminate, verified against a real image:
+#   - the hook library exists and links its client library
+#   - loading it via -t succeeds, while a bogus hook path exits 1
+for be in mysql pgsql; do
+  case "$be" in
+    mysql) type=mysql;      clientlib=libmariadb ;;
+    pgsql) type=postgresql; clientlib=libpq ;;
+  esac
+  lib="/usr/lib/kea/hooks/libdhcp_${be}.so"
+
+  docker run --rm "$DHCP4_IMAGE" test -f "$lib" \
+    || fail "$lib missing - the $type backend was not built"
+
+  docker run --rm "$DHCP4_IMAGE" sh -c "ldd $lib | grep -q $clientlib" \
+    || fail "$lib does not link $clientlib"
+
+  db_cfg() {
+    printf '{"Dhcp4":{"interfaces-config":{"interfaces":[]},'\
+'"hooks-libraries":[{"library":"%s"}],'\
+'"lease-database":{"type":"%s","name":"kea","host":"db.invalid",'\
+'"user":"u","password":"p"},"subnet4":[]}}' "$1" "$type"
+  }
+  run_t() {
+    docker run --rm -i "$DHCP4_IMAGE" \
+      sh -c 'cat > /tmp/db.conf; /usr/sbin/kea-dhcp4 -t /tmp/db.conf >/dev/null 2>&1; echo $?'
+  }
+
+  # Negative control first: a hook path that does not exist must fail, or the
+  # positive check below would pass for the wrong reason.
+  if [ "$(db_cfg /usr/lib/kea/hooks/libdhcp_definitely_not_here.so | run_t)" = "0" ]; then
+    fail "a nonexistent hook path was accepted - the $type check proves nothing"
   fi
-  pass "$be backend registered in the lease manager"
+
+  [ "$(db_cfg "$lib" | run_t)" = "0" ] \
+    || fail "$type backend config rejected with $lib loaded"
+
+  pass "$type backend: hook present, links $clientlib, loads cleanly"
 done
 
 ###############################################################################
