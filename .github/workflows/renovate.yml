@@ -81,6 +81,11 @@ jobs:
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_DRY_RUN: ${{ inputs.dryRun && 'full' || '' }}
-          # Commits are attributed to the App, not to a human account.
-          RENOVATE_GIT_AUTHOR: 'dapalab-renovate <bot@users.noreply.github.com>'
+          # Commits are attributed to the App's bot account, not to a human.
+          #
+          # The numeric prefix is what makes GitHub link the commit to the bot:
+          # <bot-user-id>+<app-slug>[bot]@users.noreply.github.com. Without it
+          # the PR comes from the bot but its commits show an unlinked author.
+          # Find the id with: gh api '/users/<app-slug>[bot]' --jq .id
+          RENOVATE_GIT_AUTHOR: 'kea-containers-renovate[bot] <331638593+kea-containers-renovate[bot]@users.noreply.github.com>'
           LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
