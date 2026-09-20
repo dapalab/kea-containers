@@ -313,6 +313,17 @@ cosign verify ghcr.io/dapalab/kea-dhcp4:3.2 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+No cosign binary? The official image is multi-arch (including arm64) and needs
+no Docker socket — `verify` talks to the registry directly:
+
+```bash
+docker run --rm ghcr.io/sigstore/cosign/cosign:latest verify \
+  ghcr.io/dapalab/kea-dhcp4:3.2 \
+  --certificate-identity-regexp \
+    '^https://github\.com/dapalab/kea-containers/\.github/workflows/build\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 Read that as a claim you can check: *these exact bytes were produced by
 `build.yml` in `dapalab/kea-containers`, and nowhere else.* If someone
 republished a modified image under a similar name, this fails.
