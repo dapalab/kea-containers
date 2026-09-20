@@ -141,6 +141,27 @@
       addLabels: ['github-actions'],
       minimumReleaseAge: '3 days',
     },
+    {
+      // RUNNER IMAGES ARE NOT ACTIONS. Renovate's github-actions manager also
+      // tracks `runs-on:`, and a dry run showed it grouping ubuntu-24.04 ->
+      // newer in with the action SHA bumps - where it would have been
+      // automerged.
+      //
+      // Changing the OS the build runs on is categorically different from
+      // bumping a pinned action: a new runner image moves Docker, buildx and
+      // the toolchain underneath us, and this project depends on
+      // ubuntu-24.04-arm specifically. That is a human decision.
+      //
+      // Note the runner is also named in scripts/matrix.py, which Renovate
+      // does not manage - so a bump here would silently desync the two.
+      matchManagers: ['github-actions'],
+      matchDepNames: ['ubuntu', 'macos', 'windows'],
+      groupName: 'runner images',
+      automerge: false,
+      addLabels: ['runner-image'],
+      minimumReleaseAge: '30 days',
+      commitMessageTopic: 'runner image {{{depName}}}',
+    },
   ],
 
   // Vulnerability alerts bypass the schedule and the minimum release age.
