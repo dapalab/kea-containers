@@ -48,11 +48,11 @@ jobs:
       # something opaque about authentication.
       - name: Check the App credentials are configured
         env:
-          APP_ID: ${{ secrets.RENOVATE_APP_ID }}
+          APP_ID: ${{ secrets.RENOVATE_APP_CLIENT_ID }}
           APP_KEY: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
         run: |
           missing=""
-          [ -n "$APP_ID" ]  || missing="$missing RENOVATE_APP_ID"
+          [ -n "$APP_ID" ]  || missing="$missing RENOVATE_APP_CLIENT_ID"
           [ -n "$APP_KEY" ] || missing="$missing RENOVATE_APP_PRIVATE_KEY"
           if [ -n "$missing" ]; then
             echo "::error::Missing repository secret(s):$missing"
@@ -65,7 +65,10 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.RENOVATE_APP_ID }}
+          # client-id, not app-id: the action deprecated app-id, and a Client
+          # ID (Iv23li...) cannot be confused with an Installation ID the way
+          # a bare numeric App ID can.
+          client-id: ${{ secrets.RENOVATE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
