@@ -14,6 +14,12 @@
 #           the job timeout. Tests run BEFORE anything is pushed, and images are
 #           pushed by digest only - no tags yet.
 #
+#           Testing and pushing are two separate buildx invocations, so "we
+#           tested it before we pushed it" does not by itself mean "we pushed
+#           what we tested". The push step therefore ASSERTS that the image
+#           manifest it published is the one the gates ran against, and fails
+#           if it is not.
+#
 #   fuse    joins the per-arch digests into one manifest list per image and
 #           applies the tags. Until this runs, nothing is reachable by tag, so
 #           a half-finished run never leaves a partially updated tag behind.
@@ -147,6 +153,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ONE timestamp for BOTH builds below. It was previously computed
+      # separately in each step, minutes apart, and it feeds the
+      # org.opencontainers.image.created LABEL - so the label layer differed
+      # and the image that passed the gates was not the image that got
+      # published. See docs/DECISIONS.md D21.
+      - name: Stamp the build time
+        run: echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       # Build every image for this branch locally first. The builder stage
       # compiles Kea once; the per-image targets come out of that same cache,
       # which is why this is one job rather than one per image.
@@ -161,7 +175,7 @@ jobs:
           REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
-          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; export CREATED
+          mkdir -p /tmp/tested
           for img in $IMAGES; do
             echo "::group::build kea-$img (test)"
             docker buildx build \
@@ -173,8 +187,16 @@ jobs:
               --build-arg "CREATED=$CREATED" \
               --cache-from "type=gha,scope=${BRANCH}-${ARCH}" \
               --cache-to   "type=gha,scope=${BRANCH}-${ARCH},mode=max" \
+              --metadata-file "/tmp/meta-test-${img}.json" \
               --load -t "kea-$img:test" \
               -f build/Dockerfile build/
+            # For a --load build this is the OCI IMAGE MANIFEST digest, which
+            # is what the push step's index wraps. Recorded so the push can
+            # prove it published these exact bytes.
+            tested="$(jq -r '."containerimage.digest"' "/tmp/meta-test-${img}.json")"
+            test -n "$tested" && test "$tested" != "null"
+            echo "$tested" > "/tmp/tested/${img}"
+            echo "kea-${img} tested image manifest -> ${tested}"
             echo "::endgroup::"
           done
 
@@ -208,7 +230,6 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; export CREATED
           mkdir -p /tmp/digests
           for img in $IMAGES; do
             echo "::group::push kea-$img@digest"
@@ -228,6 +249,39 @@ jobs:
             test -n "$digest" && test "$digest" != "null"
             echo "$digest" > "/tmp/digests/${img}"
             echo "kea-${img} ${ARCH} -> ${digest}"
+
+            # Prove we published the bytes we tested.
+            #
+            # These two digests are NOT the same kind of thing, which is the
+            # trap. A registry push wraps the image manifest in an INDEX
+            # alongside the provenance/SBOM attestation manifests (which
+            # carry platform "unknown/unknown"), so $digest above is an index
+            # digest and can never equal the --load build's digest. Verified
+            # empirically against a local registry: the index digest differs
+            # with and without attestations, while the child image manifest
+            # is identical to the tested one in both cases.
+            #
+            # So compare like with like: the index's own image manifest.
+            raw="$(docker buildx imagetools inspect --raw \
+                     "${REGISTRY}/${OWNER}/kea-${img}@${digest}")"
+            if echo "$raw" | jq -e 'has("manifests")' >/dev/null; then
+              published="$(echo "$raw" | jq -r '[.manifests[]
+                             | select(.platform.os != "unknown") | .digest]
+                             | unique | join(" ")')"
+            else
+              published="$digest"
+            fi
+            tested="$(cat "/tmp/tested/${img}")"
+            if [ "$published" != "$tested" ]; then
+              echo "::error::kea-${img} ${ARCH}: published image is not the tested image"
+              echo "  tested    : ${tested}"
+              echo "  published : ${published}"
+              echo "  index     : ${digest}"
+              echo "The gates ran against different bytes than were pushed."
+              echo "Most likely the build cache missed and Kea was recompiled."
+              exit 1
+            fi
+            echo "  verified: published image manifest == tested (${tested})"
             echo "::endgroup::"
           done
 

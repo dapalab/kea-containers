@@ -758,3 +758,59 @@ Its name never changes.
 **The practical effect:** Renovate cannot merge anything unless `required`
 passes. The owner retains direct push as a deliberate exception, which is the
 right split - the automation is constrained, the human is not.
+
+---
+
+## D21 — Prove the published image is the tested image, don't infer it
+
+**Decision.** Compute the build timestamp once per job and reuse it for both
+buildx invocations, then assert after pushing that the image manifest
+published is byte-identical to the one the gates ran against.
+
+**The defect.** `CREATED` was computed separately in the test step and the
+push step, minutes apart with the smoke test in between. It feeds
+`org.opencontainers.image.created`, so the label layer differed, so the two
+builds produced different images. The workflow's claim — tests run before
+anything is pushed — was literally true, while the stronger thing a reader
+takes from it, *we shipped the bytes we tested*, was not.
+
+In practice the delta was one timestamp string. The tail case is what matters:
+if the GHA cache were evicted or missed during a long smoke test, the push
+build recompiles Kea from scratch and publishes a genuinely different build,
+and nothing would have noticed.
+
+**Why the obvious assertion does not work.** Comparing the two
+`containerimage.digest` values from the metadata files fails *permanently*,
+for a reason that is easy to assume away. They are not the same kind of
+object:
+
+| Build | What `containerimage.digest` reports |
+|---|---|
+| `--load` (test) | the OCI **image manifest** digest |
+| registry push | the **index** digest |
+
+A registry push wraps the image manifest in an index alongside the
+provenance and SBOM attestation manifests, which carry platform
+`unknown/unknown`. Verified empirically against a local registry: the index
+digest differs depending on whether attestations are enabled, while the child
+image manifest is identical in both cases and equal to the `--load` digest.
+
+So the review's premise — attestations are separate manifests and therefore
+do not affect the image digest — is right about the image and wrong about the
+*reported* digest. The check compares like with like: the index's own image
+manifest child, selected by `platform.os != "unknown"`.
+
+**Validated by simulation** against a local registry, three cases:
+
+| Case | Result |
+|---|---|
+| `CREATED` identical (the fix) | digests match, publish proceeds |
+| `CREATED` differs (the old bug) | assertion fires |
+| cache miss, different content | assertion fires |
+
+So the check has failed for the right reason, twice, before being trusted.
+
+**Accepted trade-off.** A false positive blocks publishing rather than
+shipping untested bytes, which is the correct direction for this failure to
+point. If a legitimate cache miss ever trips it, the fix is to rerun the job,
+not to weaken the assertion.
