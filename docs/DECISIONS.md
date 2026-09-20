@@ -1075,3 +1075,72 @@ proves Kea tried, which is not the question.
 **Rejected: a second checked-in config.** The variant is derived from
 `test/kea-dhcp4-smoke.conf` with `sed`, so the two cannot drift.
 
+---
+
+## D23 — Put Kea in its own SBOM
+
+**Decision.** The builder generates an SPDX document describing Kea and ships
+it at `/usr/share/sbom/kea.spdx.json`. BuildKit's scanner merges it into the
+published SBOM attestation.
+
+**The defect.** `buildx --sbom=true` catalogues the *package manager's* view
+of an image. Kea is compiled from source and copied out of a builder stage,
+so it was invisible. Measured on the published `kea-dhcp4:3.2`:
+
+- 25 apk packages catalogued — `busybox`, `tzdata`, `ssl_client`, all correct
+- the string `kea` **absent from the SBOM entirely**
+- while the image ships 23 `libkea-*.so` libraries, the daemon, and a dozen
+  hook libraries
+
+An SBOM that lists `tzdata` but not the DHCP server is worse than no SBOM,
+because it reads as diligence. This was P5-1 in the review, filed as "verify
+first" — verified, and real.
+
+**One correction to the review.** It suggested injecting Kea *plus Boost and
+log4cplus*. `ldd` on the daemon shows **no Boost at all** — Kea uses Boost
+headers only, so there is no runtime component to declare — and `log4cplus`
+and OpenSSL are apk packages already correctly catalogued. The gap was Kea
+alone.
+
+**How it lands.** Verified against a real build rather than assumed: with the
+document present, the published attestation gains a `kea` package with its
+version, MPL-2.0, the upstream URL, and a CPE. The CPE matters beyond
+inventory — `cpe:2.3:a:isc:kea:3.2.0` is what lets a vulnerability scanner
+match Kea CVEs at all, which is a precondition for the scanning work in P4-1.
+
+Note the merge is lossy in one place: syft drops the SPDX `checksums` field,
+so the source hash survives in the purl
+(`pkg:generic/kea@3.2.0?checksum=sha256:…`) rather than in `checksums`. The
+shipped document carries both.
+
+**The checksum is the honest use of the hash D2 deleted.** That amendment
+removed a bare `sha256sum` because it compared the hash to nothing. Recording
+the same hash here, as the checksum of the source the binaries were built
+from, is the use that was always worth having: a statement about provenance,
+not a check pretending to be one.
+
+**Reproducible output.** The document has no live timestamp — it derives from
+`SOURCE_DATE_EPOCH`, defaulting to the epoch. A timestamp would change the
+layer between the test build and the push build and trip D21's
+tested-equals-published assertion.
+
+**Asserted in two places, because they are two different claims:**
+
+| Where | Claim |
+|---|---|
+| smoke gate 2 and gate 5 | every image *ships* a valid document agreeing with the image's version |
+| `fuse`, after tagging | the *published attestation* names Kea at the right version |
+
+The first proves the input exists; only the second proves buildx merged it.
+A scanner silently skips a document it cannot parse, so without the second
+the SBOM could quietly revert to omitting Kea with a green build.
+
+**Two of my own mistakes here, both the recurring pattern.** The validator
+started as an inline `python3 -c` whose nested quote escaping was wrong; the
+caller discarded stderr, so it failed for a reason nobody could see. It is
+now `test/check-sbom-doc.py`, a real file with its own tests. And the first
+version of those tests passed a command string that never executed, so all
+three cases reported "not valid JSON" — three green ticks, none testing what
+they claimed. The tests now assert the *expected message*, not just a
+non-zero exit.
+

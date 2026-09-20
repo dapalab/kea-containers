@@ -38,6 +38,7 @@ RUN apk add --no-cache \
 WORKDIR /build
 COPY keys/isc-keyblock.asc /build/isc-keyblock.asc
 COPY verify-tarball.sh     /usr/local/bin/verify-tarball.sh
+COPY make-sbom.sh          /usr/local/bin/make-sbom.sh
 
 # Fetch and cryptographically verify the upstream tarball. Fails closed:
 # a bad signature, a missing signature, a signer outside ISC's keyblock, or a
@@ -64,6 +65,9 @@ RUN set -eux; \
     curl -fsSL -o kea.tar.xz     "${base}/kea-${KEA_VERSION}.tar.xz"; \
     curl -fsSL -o kea.tar.xz.asc "${base}/kea-${KEA_VERSION}.tar.xz.asc"; \
     verify-tarball.sh kea.tar.xz kea.tar.xz.asc isc-keyblock.asc; \
+    make-sbom.sh "${KEA_VERSION}" kea.tar.xz \
+        "${base}/kea-${KEA_VERSION}.tar.xz" \
+        /stage/usr/share/sbom/kea.spdx.json; \
     mkdir -p src; \
     tar -xf kea.tar.xz -C src --strip-components=1
 
@@ -194,6 +198,10 @@ RUN set -eux; \
 # to redistribute with the binaries (Kea is MPL-2.0).
 COPY --from=builder /stage/usr/lib/ /usr/lib/
 COPY --from=builder /stage/usr/share/licenses/kea/ /usr/share/licenses/kea/
+# Kea is compiled from source, so buildx's SBOM scanner - which catalogues
+# the package manager's view - cannot see it. This document is what puts Kea
+# in the published SBOM attestation. See build/make-sbom.sh and D23.
+COPY --from=builder /stage/usr/share/sbom/ /usr/share/sbom/
 
 ###############################################################################
 # kea-dhcp4

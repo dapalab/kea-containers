@@ -106,7 +106,8 @@ jobs:
       - name: shellcheck
         run: |
           docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable \
-            test/smoke.sh test/verify-signature-test.sh build/verify-tarball.sh
+            test/smoke.sh test/verify-signature-test.sh \
+            build/verify-tarball.sh build/make-sbom.sh test/make-sbom-test.sh
 
       # The source-tarball signature gate, driven against expired, revoked,
       # untrusted and tampered fixtures. It needs only gpg, so it belongs here
@@ -114,6 +115,12 @@ jobs:
       # has never failed for the right reason is not a check.
       - name: Signature gate negative controls
         run: ./test/verify-signature-test.sh
+
+      # The SBOM document generator. A malformed document is skipped silently
+      # by buildx's scanner, which would put Kea back to being absent from
+      # the published SBOM with a green build.
+      - name: SBOM document generator tests
+        run: ./test/make-sbom-test.sh
 
       - name: Validate shipped config templates
         run: ./scripts/validate-configs.py
@@ -472,6 +479,37 @@ jobs:
                 echo "  ok    $ref -> $got"
               else
                 echo "::error::$ref resolved to [$got], expected amd64,arm64"
+                fail=1
+              fi
+            done
+          done
+          exit "$fail"
+
+      # The shipped SPDX document is checked before publishing (smoke gate 2),
+      # but that proves the INPUT exists - not that buildx merged it into the
+      # attestation it published. This asserts the claim itself: the SBOM
+      # attached to the tag a user pulls names Kea, at the right version.
+      #
+      # Before this existed, the published SBOM for kea-dhcp4:3.2 catalogued
+      # 25 apk packages and did not contain the string "kea" at all.
+      - name: Verify the published SBOM names Kea
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
+            kea="$(python3 -c "import json,sys;print(json.load(open('versions.json'))['branches'][sys.argv[1]]['kea'])" "$branch")"
+            for img in $(./scripts/matrix.py images "$branch"); do
+              ref="${REGISTRY}/${OWNER}/kea-${img}:${branch}"
+              got="$(docker buildx imagetools inspect "$ref" --format '{{ json .SBOM }}' \
+                     | jq -r --arg v "$kea" '
+                         [.. | objects | select(.name? == "kea") | .versionInfo]
+                         | unique | join(",")')"
+              if [ "$got" = "$kea" ]; then
+                echo "  ok    $ref -> SBOM names kea $got"
+              else
+                echo "::error::$ref SBOM has kea version [$got], expected [$kea]"
                 fail=1
               fi
             done

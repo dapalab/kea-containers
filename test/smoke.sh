@@ -34,6 +34,24 @@ LFC_BAD="kea-smoke-lfc-broken"
 LFC_BAD_IMAGE="kea-smoke-lfc-broken:test"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Every image must carry the SPDX document describing Kea itself. Without it
+# the published SBOM catalogues 25 apk packages and omits the DHCP server -
+# an inventory that reads as diligence while missing the primary artifact.
+# See build/make-sbom.sh and docs/DECISIONS.md D23.
+check_sbom_doc() {  # check_sbom_doc <image-ref> <label>
+  local doc err
+  doc="$(docker run --rm --entrypoint cat "$1" /usr/share/sbom/kea.spdx.json 2>/dev/null)" \
+    || fail "$2: /usr/share/sbom/kea.spdx.json is missing from the image"
+  # stderr is captured rather than discarded: an earlier version of this
+  # check sent it to /dev/null and hid a syntax error in its own validator,
+  # so the assertion failed for a reason nobody could see.
+  if ! err="$(printf '%s' "$doc" | python3 "$HERE/check-sbom-doc.py" "${EXPECT_VERSION:-}" 2>&1)"; then
+    printf '%s\n' "$err" | sed 's/^/      /'
+    fail "$2: the shipped SBOM document is invalid or disagrees with the image"
+  fi
+  pass "$2 ships a valid SBOM document naming Kea ${EXPECT_VERSION:-} ($err)"
+}
+
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; exit 1; }
 info() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
@@ -74,6 +92,16 @@ check_report() {
   fi
 }
 check_report "OpenSSL is the crypto backend" 'OpenSSL:.*[0-9]'
+
+# Kea is compiled from source, so buildx's SBOM scanner cannot see it; the
+# image ships an SPDX document that puts it in the attestation. Checked here,
+# before publishing, because the scanner silently skips a document it cannot
+# parse and the SBOM would quietly go back to omitting Kea.
+if [ -n "$EXPECT_VERSION" ]; then
+  check_sbom_doc "$DHCP4_IMAGE" "dhcp4"
+else
+  printf '  \033[33mskip\033[0m  SBOM document check needs EXPECT_VERSION\n'
+fi
 
 # The DB backends are compiled in. The daemon links libmariadb and libpq
 # directly - it never shells out to the mysql/psql CLI tools, which is why
@@ -299,6 +327,9 @@ check_starts() {  # $1=image suffix  $2=expected log token  $3="health" to also 
     fi
   fi
   docker rm -f "$name" >/dev/null 2>&1 || true
+
+  [ -n "$EXPECT_VERSION" ] && check_sbom_doc "${IMAGE_PREFIX}${img}${IMAGE_SUFFIX}" "$img"
+  return 0
 }
 
 check_starts dhcp6     DHCP6_STARTED     health
