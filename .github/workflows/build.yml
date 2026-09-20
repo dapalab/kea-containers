@@ -95,7 +95,14 @@ jobs:
       - name: shellcheck
         run: |
           docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable \
-            test/smoke.sh
+            test/smoke.sh test/verify-signature-test.sh build/verify-tarball.sh
+
+      # The source-tarball signature gate, driven against expired, revoked,
+      # untrusted and tampered fixtures. It needs only gpg, so it belongs here
+      # rather than behind a 25-minute Kea compile - and a security check that
+      # has never failed for the right reason is not a check.
+      - name: Signature gate negative controls
+        run: ./test/verify-signature-test.sh
 
       - name: Validate shipped config templates
         run: ./scripts/validate-configs.py

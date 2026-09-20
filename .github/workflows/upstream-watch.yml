@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Watch ISC's supported Kea branch set and open an issue when it changes.
+# Watch ISC's supported Kea branch set and the vendored PGP keyblock, and open
+# an issue when either changes.
 #
 # Renovate tracks version numbers but has no idea about ISC's support policy -
 # it cannot tell us a new stable branch has appeared or an old one has reached
@@ -43,6 +44,7 @@ jobs:
             0) echo "No change." ;;
             1) echo "::warning::upstream watcher could not parse ISC's download index" ;;
             2) echo "::notice::ISC's supported branch set has changed" ;;
+            3) echo "::warning::the vendored ISC keyblock needs attention" ;;
             *) echo "::error::unexpected exit code $code"; exit 1 ;;
           esac
 
@@ -56,18 +58,21 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          if [ "$CODE" = "1" ]; then
-            title="Upstream watcher is broken"
-            labels="upstream-watch,bug"
-          else
-            title="ISC supported Kea branches have changed"
-            labels="upstream-watch"
-          fi
+          case "$CODE" in
+            1) title="Upstream watcher is broken"
+               labels="upstream-watch,bug" ;;
+            3) title="Vendored ISC keyblock needs attention"
+               labels="upstream-watch,security" ;;
+            *) title="ISC supported Kea branches have changed"
+               labels="upstream-watch" ;;
+          esac
 
           # Ensure labels exist; harmless if they already do.
           gh label create upstream-watch --color 0E8A16 \
             --description "Raised by the upstream support-set watcher" 2>/dev/null || true
           gh label create bug --color D73A4A 2>/dev/null || true
+          gh label create security --color B60205 \
+            --description "Supply-chain or signing-key issue" 2>/dev/null || true
 
           existing="$(gh issue list --state open --label upstream-watch \
                        --search "$title in:title" --json number --jq '.[0].number // empty')"

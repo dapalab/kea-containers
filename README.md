@@ -295,6 +295,15 @@ The build keyring contains ISC's published keys and nothing else, so a tarball
 signed by any other key fails with `No public key` and the build aborts. The
 keyblock is vendored rather than fetched so that an attacker controlling the
 download path cannot supply both a tarball and a key that matches it.
+Its seven fingerprints, and the out-of-band source they were checked against,
+are recorded in [`build/keys/README.md`](build/keys/README.md).
+
+The gate asserts gpg's `GOODSIG` status token rather than trusting its exit
+code, which is **0 even for a signature made by an expired or revoked key** —
+for a revoked key gpg still prints "Good signature". The check therefore lives
+in [`build/verify-tarball.sh`](build/verify-tarball.sh), where
+`test/verify-signature-test.sh` can drive it against expired, revoked,
+untrusted and tampered fixtures on every pull request.
 
 ISC publishes **no checksum files** for Kea — only detached `.asc` signatures —
 so there is no upstream SHA-256 to compare against. See `docs/DECISIONS.md` D2.

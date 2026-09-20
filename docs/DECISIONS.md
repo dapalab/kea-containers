@@ -49,6 +49,70 @@ and different releases are signed by different people (3.2.0 by Andrei Pavel,
 an eighth key, builds will fail until someone reviews and re-vendors the block.
 That is the intended behaviour: trust expansion should be a deliberate act.
 
+### Amendment, 2026-09-20 — the gate was not actually fail-closed
+
+The reasoning above is correct for the case it considered, and the NO_PUBKEY
+path was real: a tarball signed from outside the block does fail, with exit 2.
+But the implementation trusted `gpg`'s exit code, and that was wrong.
+
+**`gpg --batch --verify` exits 0 for a signature made by a key that has
+expired or been revoked.** Both were reproduced against GnuPG 2.4.4:
+
+| Case | Human-readable output | Exit | status-fd token |
+|---|---|---|---|
+| valid | `Good signature from ...` | 0 | `GOODSIG` |
+| expired key | `Good signature ... [expired]` | **0** | `EXPKEYSIG` |
+| revoked key | `Good signature ...` + warning | **0** | `REVKEYSIG` |
+| bad signature | `BAD signature` | 1 | `BADSIG` |
+| signer not in block | `Can't check signature` | 2 | `NO_PUBKEY` |
+
+The revoked case is the dangerous one: the human-readable output still says
+**"Good signature"**, and the only thing distinguishing it is a warning line
+in a build log nobody reads. A build would have kept passing, and the
+fail-closed guarantee would have silently stopped holding.
+
+Note that `GOODSIG` is *absent* in the bad cases rather than accompanied by
+something extra. So the fix asserts the **presence of GOODSIG** rather than
+the absence of known-bad tokens: a failure mode GnuPG adds in future will also
+lack GOODSIG, which keeps the assertion correct without maintenance.
+
+**A premise worth correcting.** The obvious motivation for this — "ISC's keys
+will eventually expire" — turns out not to apply. All seven keys in the
+current block are set to **never expire** (verified 2026-09-20). The live risk
+is therefore *revocation*, not expiry, and specifically this sequence:
+
+1. An ISC engineer's key is compromised and ISC revokes it.
+2. We re-vendor the keyblock for an unrelated reason — say, an eighth signer.
+3. The new block now contains the revocation certificate.
+4. Under the old gate, a tarball signed by the compromised key keeps verifying
+   and keeps printing "Good signature".
+
+Re-vendoring is the moment we *learn* about a revocation, and it was also the
+moment the old gate would have started ignoring it.
+
+**Why the check moved out of the Dockerfile.** It now lives in
+`build/verify-tarball.sh`, called from the builder stage. An inline `RUN`
+cannot be tested, and `test/verify-signature-test.sh` drives the real script
+against good, expired, revoked, untrusted-signer and tampered-payload
+fixtures. Those tests were confirmed to fail against the *old* logic — the
+expired and revoked cases were accepted by it — so the gate has now failed for
+the right reason before being trusted. It runs in `lint`, in seconds, because
+it needs only `gpg` and not a Kea compile.
+
+**Supporting changes.** `build/keys/README.md` records the seven fingerprints,
+the date, and the out-of-band check they were confirmed against (the vendored
+file is byte-identical to `www.isc.org/docs/isc-keyblock.asc`, a different
+host to the one serving the tarballs). `scripts/check-upstream.py` gained a
+weekly keyblock check — exit code 3, its own issue title — that reports a
+revoked, expired or soon-to-expire key. Since no real key currently expires,
+that warning could only ever have reported "healthy", so it too is driven by
+revoked and expiring fixtures in the test suite.
+
+**On the SHA-256 question.** See P2-1 in the review: the `sha256sum` line in
+this block computes a hash and compares it to nothing. The position argued
+above — that a signature over the bytes subsumes a hash fetched from the same
+server — is unchanged and still correct. The line is addressed separately.
+
 ---
 
 ## D3 — One image per daemon, not one combined image

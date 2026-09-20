@@ -8,6 +8,8 @@
 # signature is verified against a vendored copy of ISC's code-signing
 # keyblock. The keyring contains ONLY ISC's published keys, so a tarball
 # signed by anything else fails with "No public key" and the build stops.
+# The gate asserts a GOODSIG status token rather than trusting gpg's exit
+# code, which is 0 even for an expired or revoked signing key.
 #
 # One builder stage compiles Kea once per architecture; every runtime image
 # is carved out of that single install tree and shares one base layer.
@@ -35,25 +37,27 @@ RUN apk add --no-cache \
 
 WORKDIR /build
 COPY keys/isc-keyblock.asc /build/isc-keyblock.asc
+COPY verify-tarball.sh     /usr/local/bin/verify-tarball.sh
 
 # Fetch and cryptographically verify the upstream tarball. Fails closed:
-# a bad signature, a missing signature, or a signer outside ISC's keyblock
-# all abort the build.
+# a bad signature, a missing signature, a signer outside ISC's keyblock, or a
+# signer whose key has expired or been revoked all abort the build.
+#
+# The verification itself lives in verify-tarball.sh rather than inline here,
+# so that test/verify-signature-test.sh can drive the REAL script against
+# expired, revoked, untrusted and tampered fixtures. An inline heredoc cannot
+# be tested, and an untested security check is the thing this repo keeps
+# learning not to ship. See that script's header for why `gpg --verify`
+# alone is not enough.
 RUN set -eux; \
     test -n "${KEA_VERSION}"; \
     base="https://downloads.isc.org/isc/kea/${KEA_VERSION}"; \
     curl -fsSL -o kea.tar.xz     "${base}/kea-${KEA_VERSION}.tar.xz"; \
     curl -fsSL -o kea.tar.xz.asc "${base}/kea-${KEA_VERSION}.tar.xz.asc"; \
-    export GNUPGHOME=/build/.gnupg; \
-    mkdir -p "${GNUPGHOME}"; \
-    chmod 700 "${GNUPGHOME}"; \
-    gpg --batch --quiet --import isc-keyblock.asc; \
-    echo "--- verifying kea-${KEA_VERSION}.tar.xz against ISC keyblock ---"; \
-    gpg --batch --verify kea.tar.xz.asc kea.tar.xz; \
+    verify-tarball.sh kea.tar.xz kea.tar.xz.asc isc-keyblock.asc; \
     sha256sum kea.tar.xz; \
     mkdir -p src; \
-    tar -xf kea.tar.xz -C src --strip-components=1; \
-    rm -rf "${GNUPGHOME}"
+    tar -xf kea.tar.xz -C src --strip-components=1
 
 WORKDIR /build/src
 
