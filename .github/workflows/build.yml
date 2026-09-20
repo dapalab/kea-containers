@@ -39,6 +39,21 @@ on:
       - '.github/workflows/upstream-watch.yml'
       - '.github/workflows/build-skip.yml'
   pull_request:
+    # Same filter as the push trigger, so a documentation PR does not
+    # run the four-job matrix for nothing. build-skip.yml carries the
+    # exact inverse filter and supplies the 'required' check branch
+    # protection needs, so skipping here cannot strand a PR.
+    # scripts/check-workflow-paths.py asserts the lists stay in sync.
+    paths-ignore:
+      - 'docs/**'
+      - 'examples/**'
+      - '*.md'
+      - 'NOTICE'
+      - 'LICENSE'
+      - 'renovate.json5'
+      - '.github/workflows/renovate.yml'
+      - '.github/workflows/upstream-watch.yml'
+      - '.github/workflows/build-skip.yml'
   schedule:
     # Weekly rebuild so Alpine security fixes land without a Kea release.
     - cron: '17 4 * * 1'
@@ -84,6 +99,12 @@ jobs:
 
       - name: Validate shipped config templates
         run: ./scripts/validate-configs.py
+
+      # Drift between build.yml's path filters and build-skip.yml's does not
+      # fail a build - it strands pull requests, because neither workflow
+      # triggers and the 'required' check never reports. Catch it here instead.
+      - name: Check workflow path filters are in sync
+        run: ./scripts/check-workflow-paths.py
 
   # ---------------------------------------------------------------------------
   matrix:
