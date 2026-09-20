@@ -648,3 +648,49 @@ shared `libkea` stack - allocation engine, lease manager, configuration parsing
 the v4 raw-socket path was validated on a Raspberry Pi. Documented here rather
 than hidden so anyone relying on the v6 image knows precisely what CI does and
 does not prove.
+
+---
+
+## D20 — Branch protection, so automerge is enforced rather than trusted
+
+**Decision.** `main` requires a status check named `required` to pass. Native
+auto-merge and branch deletion are enabled; Renovate uses platform auto-merge.
+
+**Why.** Renovate automerges Alpine digest and GitHub Actions updates. Without
+required checks, nothing *structurally* prevented a bad merge - Renovate checks
+CI status before merging, but that is Renovate policing itself. If a workflow
+failed to trigger, it would see no failing checks and merge. For a repository
+that publishes DHCP server images unattended, that enforcement should come from
+the platform.
+
+### The trap: matrix job names are not stable
+
+Build job check names embed the versions:
+
+```
+build (3.2, 3.2.0, alpine:3.24@sha256:294b68...)
+```
+
+Those change whenever `versions.json` changes - exactly what Renovate does.
+Requiring them directly would leave branch protection waiting forever for a
+check that never reports under its old name. **The first Kea bump would have
+deadlocked itself**, blocking the update the automation exists to deliver.
+
+Hence the `required` job: depends on `lint`, `matrix` and `build`, runs with
+`if: always()`, and fails if any of them failed, was cancelled or was skipped.
+Its name never changes.
+
+### Settings, and why each
+
+| Setting | Value | Reasoning |
+|---|---|---|
+| `checks` | `required` only | stable name; see above |
+| `strict` | **false** | `true` forces every PR to be rebased whenever `main` moves. On a repo where Renovate opens several PRs at once that is constant churn for no safety gain here. |
+| `enforce_admins` | **false** | Keeps an emergency escape hatch for the owner. It does **not** weaken the Renovate guarantee: Renovate acts through a GitHub App, not as an admin, so it is bound by the check regardless. |
+| `required_pull_request_reviews` | none | Solo project. Requiring a review you would give yourself is theatre, and it would block automerge entirely. |
+| `allow_force_pushes` | false | Protects history and the commit signatures on it. |
+| `allow_deletions` | false | `main` cannot be deleted. |
+
+**The practical effect:** Renovate cannot merge anything unless `required`
+passes. The owner retains direct push as a deliberate exception, which is the
+right split - the automation is constrained, the human is not.
