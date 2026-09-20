@@ -798,6 +798,47 @@ rather than by releases. Tolerable for a year or two.
 
 ---
 
+### Amendment, 2026-09-20 — measured, and a safe collector written
+
+The deferral stands on the numbers. Measured before any cleanup existed:
+
+| Package | Versions | "Delete untagged" would remove | ...of which were LIVE children |
+|---|---|---|---|
+| `kea-dhcp4` | 136 | 94 | **48** |
+| `kea-ctrl-agent` | 68 | 47 | **24** |
+
+**Roughly half of every untagged version is load-bearing** — a per-arch
+manifest or an SBOM/provenance attestation under a working index. The
+default setting of essentially every off-the-shelf GHCR cleanup action
+would have broken all five images at once.
+
+`scripts/gc-packages.py` computes reachability instead: keep anything
+tagged, anything an index points at, and any signature whose subject
+survives. Everything else is the remains of a build whose tags have moved
+on.
+
+**A subtlety not in the original entry.** 40 of `kea-dhcp4`'s 47 registry
+tags are cosign `sha256-<digest>.sig` / attestation tags. Deleting a
+superseded index without its signature leaves a tagged signature pointing
+at nothing, so signatures are paired with their subject and share its fate.
+
+**Three refusals, each tested by breaking the thing it guards:**
+
+| Guard | Proved by |
+|---|---|
+| Refuse if >50% of a package would go | Disabling the reachability walk: it stopped at 47/68 rather than deleting the package |
+| Refuse if the registry cannot be walked | A bad owner: `403`, exit 1, nothing deleted |
+| Refuse while a build is in flight | Running it during a live build: `fuse` pushes an index *then* tags it, so a walk landing between would read a live index as garbage |
+
+Dry run is the default and deletion needs `--delete`.
+
+**Validated against all five live packages** with an independent
+reachability walk that does not reuse the collector's own result: of the
+207 versions it proposes deleting across the five, **zero** are reachable
+from any tag.
+
+Still not scheduled, and that is deliberate. It runs by hand, and should
+keep running by hand until it has been used enough times to be boring.
 ## D18 — Keyless cosign signing
 
 **Decision.** Every published image is signed with cosign using the workflow's

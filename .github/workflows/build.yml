@@ -82,6 +82,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # gc-packages.py is a manual tool, so nothing else in CI would notice
+      # it rotting. A compile check is cheap insurance.
+      - name: Byte-compile helper scripts
+        run: python3 -m py_compile scripts/*.py
+
       - name: Validate versions.json
         run: ./scripts/matrix.py check
 
