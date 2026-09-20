@@ -33,6 +33,10 @@ on:
       - 'NOTICE'
       - 'LICENSE'
       - 'renovate.json5'
+      # These two workflows cannot affect an image. build.yml is deliberately
+      # NOT listed - a change to it must rebuild.
+      - '.github/workflows/renovate.yml'
+      - '.github/workflows/upstream-watch.yml'
   pull_request:
   schedule:
     # Weekly rebuild so Alpine security fixes land without a Kea release.
