@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: MPL-2.0
+//
+// Renovate configuration. Run self-hosted from .github/workflows/renovate.yml.
+//
+// Three things are tracked, and they are deliberately treated differently:
+//
+//   Kea version   never automerged. A DHCP server version bump is a human
+//                 decision, even when CI is green.
+//   Alpine base   automerged on digest, because that is how Alpine security
+//                 fixes reach the images between releases.
+//   Actions       automerged, pinned by commit SHA.
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+
+  extends: [
+    'config:recommended',
+    ':dependencyDashboard',
+    // Pin GitHub Actions to commit SHAs rather than moving tags. A tag can be
+    // repointed at different code; a SHA cannot.
+    'helpers:pinGitHubActionDigests',
+  ],
+
+  // Matches the commit style used in this repository.
+  semanticCommits: 'enabled',
+  commitMessageLowerCase: 'never',
+
+  // The workflow's cron decides when Renovate runs, so do not add a second
+  // schedule here - it would only create confusing windows where a run happens
+  // but produces nothing.
+  schedule: ['at any time'],
+
+  labels: ['dependencies'],
+  prConcurrentLimit: 5,
+  prHourlyLimit: 0,
+
+  customManagers: [
+    {
+      // Kea version, per branch.
+      //
+      // Both entries resolve to the same upstream repository, so they must be
+      // given DISTINCT dep names or their version constraints would collide.
+      // depName is synthesised from the branch key ("kea-3.0", "kea-3.2")
+      // while packageName carries the real lookup target.
+      customType: 'regex',
+      description: 'Kea version in versions.json, per stable branch',
+      managerFilePatterns: ['/^versions\\.json$/'],
+      matchStrings: [
+        '"(?<branchId>\\d+\\.\\d+)":\\s*\\{[^}]*?"kea":\\s*"(?<currentValue>[^"]+)"',
+      ],
+      depNameTemplate: 'kea-{{{branchId}}}',
+      packageNameTemplate: 'isc-projects/kea',
+      datasourceTemplate: 'github-tags',
+      // Upstream tags look like "Kea-3.2.0" - capital K, hyphen, no v prefix.
+      // Development releases use the identical shape (Kea-3.3.1), so the tag
+      // format offers no protection against odd minors; allowedVersions below
+      // does all of that work.
+      extractVersionTemplate: '^Kea-(?<version>\\d+\\.\\d+\\.\\d+)$',
+      versioningTemplate: 'semver',
+    },
+    {
+      // Alpine base image, pinned by tag AND digest.
+      customType: 'regex',
+      description: 'Alpine base image in versions.json',
+      managerFilePatterns: ['/^versions\\.json$/'],
+      matchStrings: [
+        '"alpineRef":\\s*"(?<depName>[a-z0-9]+):(?<currentValue>[^@"]+)@(?<currentDigest>sha256:[a-f0-9]{64})"',
+      ],
+      datasourceTemplate: 'docker',
+    },
+    {
+      // The Dockerfile's ARG default. CI always passes an explicit digest, so
+      // this only affects local builds - but a stale default is still a trap.
+      customType: 'regex',
+      description: 'ALPINE_REF fallback in the Dockerfile',
+      managerFilePatterns: ['/^build/Dockerfile$/'],
+      matchStrings: [
+        'ARG ALPINE_REF=(?<depName>[a-z0-9]+):(?<currentValue>[^\\s@]+)\\s',
+      ],
+      datasourceTemplate: 'docker',
+    },
+  ],
+
+  packageRules: [
+    // ---------------------------------------------------------------------
+    // Kea: constrain each branch to its own minor, forever.
+    //
+    // This is what stops the 3.0 LTS entry being offered 3.2.x, and what
+    // structurally prevents an odd-numbered development release ever being
+    // proposed - 3.1 and 3.3 fall outside both ranges.
+    // ---------------------------------------------------------------------
+    {
+      matchDepNames: ['kea-3.0'],
+      allowedVersions: '>=3.0.0 <3.1.0',
+      addLabels: ['kea', 'lts'],
+    },
+    {
+      matchDepNames: ['kea-3.2'],
+      allowedVersions: '>=3.2.0 <3.3.0',
+      addLabels: ['kea'],
+    },
+    {
+      // Never automerge a Kea bump, however green CI is. Someone decides.
+      matchDepNames: ['/^kea-/'],
+      automerge: false,
+      minimumReleaseAge: '3 days',
+      commitMessageTopic: 'Kea {{{replace "kea-" "" depName}}}',
+    },
+
+    // ---------------------------------------------------------------------
+    // Alpine: automerge digest-only updates. These carry the security fixes
+    // that the weekly rebuild also picks up; getting them pinned explicitly
+    // means the digest in versions.json does not drift from reality.
+    //
+    // A TAG change (3.24 -> 3.25) is a different matter and stays manual: a
+    // new Alpine release can move compiler and library versions under us.
+    // ---------------------------------------------------------------------
+    {
+      matchDatasources: ['docker'],
+      matchPackageNames: ['alpine'],
+      matchUpdateTypes: ['digest'],
+      automerge: true,
+      addLabels: ['alpine', 'digest'],
+      commitMessageTopic: 'Alpine base image digest',
+    },
+    {
+      matchDatasources: ['docker'],
+      matchPackageNames: ['alpine'],
+      matchUpdateTypes: ['major', 'minor'],
+      automerge: false,
+      addLabels: ['alpine'],
+      minimumReleaseAge: '7 days',
+    },
+
+    // ---------------------------------------------------------------------
+    // GitHub Actions: grouped and automerged, always SHA-pinned.
+    // ---------------------------------------------------------------------
+    {
+      matchManagers: ['github-actions'],
+      groupName: 'github actions',
+      automerge: true,
+      addLabels: ['github-actions'],
+      minimumReleaseAge: '3 days',
+    },
+  ],
+
+  // Vulnerability alerts bypass the schedule and the minimum release age.
+  vulnerabilityAlerts: {
+    labels: ['security'],
+    minimumReleaseAge: null,
+    automerge: false,
+  },
+}

@@ -478,3 +478,59 @@ which it was found.
 workflow supplies from `matrix.kea`, `github.sha` and the build timestamp, so
 every published image records exactly which commit and which Kea release
 produced it.
+
+---
+
+## D16 — Renovate runs self-hosted, as a GitHub App
+
+**Decision.** Renovate runs from `.github/workflows/renovate.yml` using a
+GitHub App token, not `GITHUB_TOKEN` and not the hosted Renovate app.
+
+**Why self-hosted.** No third-party service needs access to the repository,
+and the schedule sits beside the other two clocks (weekly rebuild, upstream
+watcher) where all three can be seen together.
+
+**Why an App rather than `GITHUB_TOKEN`.** This is a practical constraint, not
+a preference: **pull requests opened with `GITHUB_TOKEN` do not trigger other
+workflows.** GitHub does this to prevent recursion. A Renovate PR bumping Kea
+would therefore never have `build.yml` run against it, so the update would
+arrive unvalidated - defeating the purpose of proposing it. An App token is
+not `GITHUB_TOKEN`, so the restriction does not apply.
+
+**Why an App rather than a PAT.** A PAT would also trigger workflows. The App
+wins on three counts: tokens are minted per run and expire within the hour, so
+only a private key is stored; PRs come from a bot identity rather than a human
+account; and it is scoped to exactly this repository. The honest tradeoff is
+that a long-lived private key is still a stored secret - better scoped and
+independently revocable, not absent.
+
+**The App needs `Workflows: write`**, which is easy to miss. Renovate edits
+`.github/workflows/*.yml` to bump SHA-pinned actions, and without that
+permission those PRs fail with a confusing push rejection.
+
+### Update policy, and why the three differ
+
+| | Automerge | Reasoning |
+|---|---|---|
+| Kea version | **never** | A DHCP server version bump is a human decision, however green CI is. 3-day minimum release age. |
+| Alpine **digest** | yes | This is how Alpine security fixes reach the images between releases. |
+| Alpine **tag** (3.24 → 3.25) | no | A new Alpine release can move compiler and library versions underneath the build. 7-day age. |
+| GitHub Actions | yes | Grouped, SHA-pinned, 3-day age. |
+
+### Per-branch constraints
+
+Both `versions.json` entries resolve to the same upstream repository, so they
+would collide under one dependency name. The custom manager synthesises
+distinct names from the branch key - `kea-3.0`, `kea-3.2` - while
+`packageNameTemplate` carries the real lookup target.
+
+`allowedVersions` then constrains each to its own minor: `>=3.0.0 <3.1.0` and
+`>=3.2.0 <3.3.0`. That is what stops the LTS entry being offered 3.2.x, and it
+**structurally prevents an odd-numbered development release** ever being
+proposed, since 3.1 and 3.3 fall outside both ranges. A future 3.4 is excluded
+too, which is correct: adopting a new stable branch is a human decision, and
+the upstream watcher opens an issue when one appears.
+
+Verified against the real files: the manager produces exactly two Kea
+dependencies with the right names and values, two `alpineRef` matches, and one
+Dockerfile `ARG` match.

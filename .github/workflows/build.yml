@@ -22,6 +22,17 @@ name: build
 on:
   push:
     branches: [main]
+    # Documentation-only changes cannot alter an image, and a full rebuild is
+    # ~25 minutes across four jobs. Everything that CAN affect an image -
+    # build/, versions.json, scripts/, test/, the workflows themselves - is
+    # deliberately absent from this list.
+    paths-ignore:
+      - 'docs/**'
+      - 'examples/**'
+      - '*.md'
+      - 'NOTICE'
+      - 'LICENSE'
+      - 'renovate.json5'
   pull_request:
   schedule:
     # Weekly rebuild so Alpine security fixes land without a Kea release.
