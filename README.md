@@ -97,6 +97,17 @@ Caveat: by design the host cannot reach a macvlan container over that
 interface. Use `ipvlan` in L2 mode, or add a host-side macvlan shim, if you
 need host-to-container access.
 
+> **`docker ps` shows no PORTS on macvlan — this is expected.**
+> Docker only populates that column where port publishing applies, i.e. bridge
+> networks where traffic is NAT'd from the host. On macvlan the container has
+> its own MAC and IP on the segment, so every port is already reachable at that
+> address and there is nothing to map. The image does declare the ports; check
+> with `docker image inspect --format '{{json .Config.ExposedPorts}}'`.
+>
+> Note also that `EXPOSE` never opens anything by itself — it is metadata. The
+> daemon listens because `interfaces-config` says so. **Do not use `-p` with
+> macvlan**; it is meaningless there.
+
 ### host networking
 
 Simplest, and the container sees all broadcast traffic:
