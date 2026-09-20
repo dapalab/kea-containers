@@ -332,6 +332,40 @@ A complete worked configuration, covering both the Kea and BIND9 sides, is in
 > ISC's DDNS image bundles it; these images do not, because BIND9 does not use
 > it. If you need it, open an issue — it is roughly 2 MB and one build flag.
 
+## Kubernetes
+
+A worked, hardened manifest is in
+[`examples/kubernetes/kea-dhcp4.yaml`](examples/kubernetes/kea-dhcp4.yaml) —
+`hostNetwork` so the daemon sees broadcast traffic, `runAsNonRoot` with a
+numeric UID, `fsGroup` so the lease volume is writable, a read-only root
+filesystem, and `capabilities: drop: [ALL]` with the two the daemon needs
+added back.
+
+Two things there are worth knowing even if you write your own:
+
+- **Kubernetes ignores the image's `VOLUME` and `HEALTHCHECK` declarations.**
+  Both have to be restated — every writable path as an explicit volume, and
+  the healthcheck as a probe.
+- **`allowPrivilegeEscalation: false` is safe here**, which is not obvious:
+  these images grant privilege through *file* capabilities, and that flag
+  sets `NoNewPrivs`. It was measured rather than assumed — the effective
+  capability set is unchanged and the daemon still binds UDP/67.
+
+## Upgrading between branches
+
+Moving 3.0 ↔ 3.2 on **memfile** needs nothing but a new tag. On **MySQL or
+PostgreSQL** it needs a schema migration, and skipping it stops the daemon
+starting:
+
+```
+MySQL schema version mismatch: expected version: 35.0, found version: 30.0
+```
+
+That is the good case — it fails loudly rather than serving from a
+mismatched schema. The procedure, the backup step (and why `kea-tools`
+cannot take the backup), and why the upgrade is one-way are in
+[`docs/UPGRADING.md`](docs/UPGRADING.md).
+
 ## Deviations from ISC's images
 
 Everything here is a deliberate choice, recorded with reasoning in

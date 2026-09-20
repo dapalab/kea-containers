@@ -1,0 +1,231 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# kea-dhcp4 on Kubernetes, serving a real L2 segment via hostNetwork.
+#
+# Every security setting below was verified against the published image
+# rather than copied from a hardening checklist - several of them interact
+# with how these images grant privilege, and one common recommendation
+# breaks them outright. The notes say which.
+#
+# WHY hostNetwork
+#     A DHCP server must see broadcast traffic on the segment it serves. Pod
+#     networking does not carry it. hostNetwork puts the daemon on the node's
+#     interfaces, which is the straightforward answer on bare metal. The
+#     alternatives are a DHCP relay pointing at a ClusterIP, or Multus/macvlan
+#     if your cluster already runs it.
+#
+#     Consequence: the pod binds UDP 67 on the NODE. Two of these on one node
+#     will not both start, and anything else using 67 there will conflict.
+#
+# WHY NOT A DaemonSet
+#     A DaemonSet would run one per node, and several DHCP servers answering
+#     on the same segment from one memfile lease database each is not a
+#     highly-available setup - it is a duplicate-allocation bug waiting to
+#     happen. One replica, pinned to a node. For real HA use Kea's own HA
+#     hook with a shared database, which is beyond this example.
+#
+# apply with:  kubectl apply -f kea-dhcp4.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kea-dhcp4-config
+  labels: { app.kubernetes.io/name: kea-dhcp4 }
+data:
+  kea-dhcp4.conf: |
+    {
+      "Dhcp4": {
+        // The node interface facing the segment you serve. "*" would bind
+        // every interface on the node, including ones you did not mean.
+        "interfaces-config": {
+          "interfaces": [ "eth0" ],
+          "service-sockets-max-retries": 5,
+          "service-sockets-require-all": true
+        },
+
+        // memfile needs a writable /var/lib/kea. Under Kubernetes that is
+        // the PVC below - the image's VOLUME declaration does nothing here
+        // (see the note on volumes).
+        "lease-database": {
+          "type": "memfile",
+          "name": "/var/lib/kea/kea-leases4.csv",
+          "persist": true,
+          "lfc-interval": 3600
+        },
+
+        "control-sockets": [
+          { "socket-type": "unix", "socket-name": "/run/kea/control_socket_4" }
+        ],
+
+        "valid-lifetime": 3600,
+        "renew-timer": 1800,
+        "rebind-timer": 3150,
+
+        "subnet4": [
+          {
+            "id": 1,
+            "subnet": "192.168.50.0/24",
+            "pools": [ { "pool": "192.168.50.100 - 192.168.50.200" } ],
+            "option-data": [
+              { "name": "routers",             "data": "192.168.50.1" },
+              { "name": "domain-name-servers", "data": "192.168.50.1" }
+            ]
+          }
+        ],
+
+        "loggers": [
+          {
+            "name": "kea-dhcp4",
+            "output_options": [ { "output": "stdout" } ],
+            "severity": "INFO"
+          }
+        ]
+      }
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kea-dhcp4-leases
+  labels: { app.kubernetes.io/name: kea-dhcp4 }
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName: your-class
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kea-dhcp4
+  labels: { app.kubernetes.io/name: kea-dhcp4 }
+spec:
+  replicas: 1
+  # RWO volume plus a host port: the old pod must be gone before the new one
+  # starts, or the replacement cannot bind and cannot mount.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app.kubernetes.io/name: kea-dhcp4 }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: kea-dhcp4 }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+
+      # The pod binds UDP 67 on whichever node it lands on, so pin it.
+      nodeSelector:
+        kubernetes.io/hostname: CHANGE-ME-node-name
+
+      securityContext:
+        # Numeric, matching the image's USER 10000:10000. runAsNonRoot can
+        # only be enforced when the user is numeric - a named user leaves
+        # the kubelet unable to tell, and it refuses to start the pod.
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        # Makes the PVC group-writable by GID 10000. Without it the lease
+        # directory is root-owned and the daemon cannot write - the failure
+        # is at startup, not later.
+        fsGroup: 10000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: kea-dhcp4
+          image: ghcr.io/dapalab/kea-dhcp4:3.2.0-20260920-2244
+          # Pin the stamped tag, not 3.2.0 - the version tags move with every
+          # weekly rebuild. See the README's tagging section.
+          imagePullPolicy: IfNotPresent
+
+          securityContext:
+            # VERIFIED, because the interaction is not obvious. These images
+            # grant privilege through FILE capabilities on the binary
+            # (cap_net_bind_service,cap_net_raw=ep), not by running as root.
+            #
+            #   drop ALL and nothing else  -> "exec /usr/sbin/kea-dhcp4:
+            #                                 operation not permitted"
+            #   drop ALL + add these two   -> works; CapEff 0x2400
+            #
+            # add: widens the BOUNDING set; the file capabilities then do the
+            # actual granting. Both halves are required.
+            capabilities:
+              drop: [ "ALL" ]
+              add:
+                - NET_BIND_SERVICE   # bind UDP/67
+                - NET_RAW            # the DHCPv4 broadcast path
+            # Also verified: this does NOT break the file capabilities, which
+            # is the opposite of what one might expect from a flag whose job
+            # is to set NoNewPrivs. Measured with Docker's equivalent
+            # (--security-opt no-new-privileges): CapEff was unchanged at
+            # 0x2400 and the daemon bound UDP/67 normally.
+            allowPrivilegeEscalation: false
+            # Verified with the equivalent Docker run: the daemon starts and
+            # reports healthy with the root filesystem read-only, given the
+            # two writable mounts below.
+            readOnlyRootFilesystem: true
+
+          # Kubernetes IGNORES the image's HEALTHCHECK entirely, so it has to
+          # be restated. This is the same status-get probe over the control
+          # socket that the image itself uses.
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                # Block scalar, because `*0` at the start of a YAML token is
+                # parsed as an alias and the file will not load.
+                - |
+                  echo '{"command":"status-get"}' \
+                    | nc -U -N -w3 /run/kea/control_socket_4 \
+                    | grep -q '"result": *0'
+            periodSeconds: 3
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                # Block scalar, because `*0` at the start of a YAML token is
+                # parsed as an alias and the file will not load.
+                - |
+                  echo '{"command":"status-get"}' \
+                    | nc -U -N -w3 /run/kea/control_socket_4 \
+                    | grep -q '"result": *0'
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 256Mi }
+
+          # The image declares VOLUME for /etc/kea and /var/lib/kea. That is
+          # a Docker concept and Kubernetes ignores it completely - nothing
+          # is persisted and nothing is made writable on its account. Every
+          # writable path has to be an explicit volume here, which is why
+          # /run/kea appears below even though it only holds a socket.
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kea/kea-dhcp4.conf
+              subPath: kea-dhcp4.conf
+              readOnly: true
+            - name: leases
+              mountPath: /var/lib/kea
+            - name: run
+              mountPath: /run/kea
+
+      volumes:
+        - name: config
+          configMap:
+            name: kea-dhcp4-config
+        - name: leases
+          persistentVolumeClaim:
+            claimName: kea-dhcp4-leases
+        - name: run
+          # Kea refuses a control-socket directory more permissive than 0750,
+          # so this cannot simply be a default-mode emptyDir shared around.
+          # fsGroup above gives GID 10000 access to it.
+          emptyDir: {}
