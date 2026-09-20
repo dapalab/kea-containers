@@ -576,3 +576,36 @@ users who followed that advice. 90 days means a pin survives a quarter.
 clutter rather than money. Accumulation runs at roughly 7 versions per package
 per weekly rebuild - about 360 a year each, driven by the rebuild schedule
 rather than by releases. Tolerable for a year or two.
+
+---
+
+## D18 — Keyless cosign signing
+
+**Decision.** Every published image is signed with cosign using the workflow's
+OIDC identity. No key material is stored anywhere.
+
+**Why keyless.** A signing key held in a repository secret has to be
+generated, stored, rotated and protected, and its compromise is silent. Keyless
+signing binds the signature to the workflow identity
+(`.../build.yml@refs/heads/main`) and records it in Sigstore's public
+transparency log. There is nothing to leak.
+
+**Sign the index, not the tags.** One signature per image index covers every
+tag pointing at it, so `3.2` and `3.2.0` need one between them. It also stays
+valid when a moving tag is later repointed, because the signature is bound to
+bytes rather than to a name.
+
+**Signing happens last**, after the multi-arch verification step. A signature
+asserts "this CI produced these bytes"; attaching one to an image we had not
+yet confirmed was correctly assembled would make the claim misleading. The
+workflow then verifies its own signatures before finishing, so a run cannot
+report success having produced something unverifiable.
+
+**The chain this completes.** ISC signs the source tarball → the build verifies
+that signature against a vendored keyblock and fails closed → CI signs the
+resulting image → a user verifies that signature pins it to this repository.
+Each link is checkable by someone who trusts none of the others.
+
+**What it does not claim.** Only origin and integrity. It says nothing about
+ISC endorsing these images - which is precisely the point, since the useful
+question about an unofficial image is *who actually built this*.

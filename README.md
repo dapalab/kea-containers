@@ -299,6 +299,50 @@ download path cannot supply both a tarball and a key that matches it.
 ISC publishes **no checksum files** for Kea — only detached `.asc` signatures —
 so there is no upstream SHA-256 to compare against. See `docs/DECISIONS.md` D2.
 
+## Verifying these images
+
+Every published image is signed with [cosign](https://docs.sigstore.dev/) using
+**keyless** signing. There is no key to trust or rotate: the signature is bound
+to the workflow identity that produced it, and recorded in Sigstore's public
+transparency log.
+
+```bash
+cosign verify ghcr.io/dapalab/kea-dhcp4:3.2 \
+  --certificate-identity-regexp \
+    '^https://github\.com/dapalab/kea-containers/\.github/workflows/build\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Read that as a claim you can check: *these exact bytes were produced by
+`build.yml` in `dapalab/kea-containers`, and nowhere else.* If someone
+republished a modified image under a similar name, this fails.
+
+**Pin the `--certificate-identity-regexp`.** Verifying without it only proves
+*something* signed the image, not that this project did.
+
+### Build provenance and SBOM
+
+Images also carry buildx-generated SBOM and SLSA provenance attestations:
+
+```bash
+docker buildx imagetools inspect ghcr.io/dapalab/kea-dhcp4:3.2 \
+  --format '{{ json .Provenance }}'
+
+docker buildx imagetools inspect ghcr.io/dapalab/kea-dhcp4:3.2 \
+  --format '{{ json .SBOM }}'
+```
+
+### What the signature does and does not tell you
+
+It proves **origin and integrity** — these bytes came from this repository's
+CI, unmodified. Combined with the build's own PGP verification of the Kea
+tarball, the chain runs: ISC signs the source → CI verifies that signature and
+fails closed → CI signs the resulting image → you verify that.
+
+It does **not** mean ISC endorses these images. They are unofficial community
+builds, as stated throughout. The signature tells you who built them, which is
+exactly the question worth being able to answer about an unofficial image.
+
 ## Licence
 
 This repository is [MPL-2.0](LICENSE), matching Kea.
