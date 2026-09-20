@@ -10,7 +10,7 @@ out per image would recompile Kea for each one.
 Usage:
     matrix.py matrix          GitHub Actions matrix for the build jobs
     matrix.py images  BRANCH  image suffixes for a branch
-    matrix.py tags    BRANCH IMAGE [--date YYYYMMDD] [--registry REG --owner OWNER]
+    matrix.py tags    BRANCH IMAGE [--stamp YYYYMMDD-HHMM] [--registry REG --owner OWNER]
     matrix.py check           validate versions.json
 """
 import argparse
@@ -29,7 +29,7 @@ DOCKERFILE = ROOT / "build" / "Dockerfile"
 CONFIG_DIR = ROOT / "build" / "config"
 STAGE = re.compile(r"^FROM\s+\S+\s+AS\s+(\S+)\s*$", re.M)
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
-DATESTAMP = re.compile(r"^\d{8}$")
+STAMP = re.compile(r"^\d{8}-\d{4}$")
 DIGEST = re.compile(r"^alpine:[\w.]+@sha256:[0-9a-f]{64}$")
 
 
@@ -86,7 +86,7 @@ def check():
     for bid, b in branches.items():
         for img in b.get("images", []):
             names = [t.rsplit(":", 1)[1]
-                     for t in tags(bid, img, "ghcr.io", "owner", date="20260101")]
+                     for t in tags(bid, img, "ghcr.io", "owner", stamp="20260101-0000")]
             where = f"tags({bid}, {img})"
             if "latest" in names:
                 errors.append(f"{where}: 'latest' must never be published (D10)")
@@ -95,17 +95,39 @@ def check():
                 errors.append(
                     f"{where}: bare major tag {major!r} must never be published - it "
                     f"would resolve to the shorter-lived stable branch (D10)")
-            dated = [n for n in names if n.endswith("-20260101")]
+            dated = [n for n in names if n.endswith("-20260101-0000")]
             if len(dated) != 1:
                 errors.append(
-                    f"{where}: expected exactly one immutable date tag, got {dated}")
-            elif dated[0] != f"{b['kea']}-20260101":
+                    f"{where}: expected exactly one immutable tag, got {dated}")
+            elif dated[0] != f"{b['kea']}-20260101-0000":
                 errors.append(
-                    f"{where}: date tag {dated[0]!r} should be {b['kea']}-20260101")
+                    f"{where}: immutable tag {dated[0]!r} should be "
+                    f"{b['kea']}-20260101-0000")
+            # fuse selects the immutable tag by matching the stamp, but a
+            # reader will reasonably assume position too. Keep both true.
+            elif names[0] != dated[0]:
+                errors.append(
+                    f"{where}: the immutable tag must come first, got {names}")
             if b["kea"] not in names or bid not in names:
                 errors.append(f"{where}: missing {b['kea']!r} or {bid!r} in {names}")
             if len(names) != len(set(names)):
                 errors.append(f"{where}: duplicate tags in {names}")
+
+    # Negative control on the stamp validator itself. Everything above feeds
+    # it a well-formed stamp, so loosening STAMP back to date-only would go
+    # unnoticed - and date-only is the exact bug this format replaced: four
+    # builds ran on 2026-09-20, which would have been one tag over four
+    # different images.
+    bid0 = next(iter(branches))
+    img0 = branches[bid0]["images"][0]
+    for bad in ("20260101", "2026-01-01", "20260101-000", "20260101-0000-1", ""):
+        try:
+            tags(bid0, img0, "ghcr.io", "owner", stamp=bad)
+        except ValueError:
+            continue
+        if bad:  # an empty stamp legitimately means "no immutable tag"
+            errors.append(
+                f"stamp validator accepted {bad!r}; it must require YYYYMMDD-HHMM")
     if errors:
         for e in errors:
             print(f"error: {e}", file=sys.stderr)
@@ -114,28 +136,40 @@ def check():
     return 0
 
 
-def tags(bid, image, registry, owner, date=None):
-    """Tag list for one image on one branch.
+def tags(bid, image, registry, owner, stamp=None):
+    """Tag list for one image on one branch. The immutable tag comes first.
 
     Exactly one tag here is immutable. The weekly rebuild re-pushes the same
     Kea versions against fresh Alpine packages, so EVERY version-shaped tag
     moves - including `3.2.0`, which reads like a pin and is not one. The
-    date-suffixed tag `3.2.0-20260920` is never reused, so there is something
-    to pin that actually holds still, and a cosign signature made against it
-    keeps resolving to the bytes it was made over. See docs/DECISIONS.md D10.
+    stamped tag `3.2.0-20260920-2203` is never reused, so there is something
+    to pin that holds still, and a cosign signature made over those bytes
+    keeps resolving by name after the moving tags have left them behind.
+
+    WHY THE TIME, NOT JUST THE DATE. Images rebuild more often than weekly:
+    every automerged Renovate PR (Alpine digest, grouped actions) is a push
+    to main and therefore a build. Four builds ran on 2026-09-20 alone. A
+    date-only stamp would have published `3.2.0-20260920` four times over
+    different bytes, which is the opposite of immutable.
+
+    Minute resolution suffices because `concurrency: build-<ref>` serialises
+    runs on main and a build takes 17+ minutes - but fuse asserts the tag
+    does not already exist rather than relying on that argument.
 
     No bare major tag and no `latest`, unchanged: a bare `3` would resolve to
     the shorter-lived stable branch while the LTS outlives it.
+
+    See docs/DECISIONS.md D10, including why this tag is deliberately
+    invisible to Renovate and what its users should pin instead.
     """
     b = load()[bid]
     names = []
-    if date:
-        # A date tag is permanent once pushed - it can never be corrected,
-        # only abandoned. Validate it rather than discover the mistake in
-        # the registry.
-        if not DATESTAMP.match(date):
-            raise ValueError(f"--date must be YYYYMMDD, got {date!r}")
-        names.append(f"{b['kea']}-{date}")
+    if stamp:
+        # Permanent once pushed: it can never be corrected, only abandoned.
+        # Validate here rather than discover the mistake in the registry.
+        if not STAMP.match(stamp):
+            raise ValueError(f"--stamp must be YYYYMMDD-HHMM, got {stamp!r}")
+        names.append(f"{b['kea']}-{stamp}")
     names += [b["kea"], bid]
     if b.get("lts"):
         names.append(f"{bid}-lts")
@@ -150,7 +184,7 @@ def main():
     q = sub.add_parser("images"); q.add_argument("branch")
     t = sub.add_parser("tags")
     t.add_argument("branch"); t.add_argument("image")
-    t.add_argument("--date", help="YYYYMMDD; adds the immutable date-suffixed tag")
+    t.add_argument("--stamp", help="YYYYMMDD-HHMM; adds the immutable stamped tag")
     t.add_argument("--registry", default="ghcr.io"); t.add_argument("--owner", default="dapalab")
     a = p.parse_args()
 
@@ -174,7 +208,7 @@ def main():
         print(" ".join(load()[a.branch]["images"]))
     elif a.cmd == "tags":
         try:
-            print("\n".join(tags(a.branch, a.image, a.registry, a.owner, a.date)))
+            print("\n".join(tags(a.branch, a.image, a.registry, a.owner, a.stamp)))
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)

@@ -56,40 +56,85 @@ the image size. Nothing depends on it — see
 
 | Tag | Moves? | Meaning |
 |---|---|---|
-| `3.2.0-20260921` | **no — never reused** | Kea 3.2.0 as built on that date |
+| `3.2.0-20260920-2203` | **no — never reused** | Kea 3.2.0 as built at that UTC minute |
 | `3.2.0` | yes | Newest build of Kea 3.2.0 |
 | `3.2` | yes | Latest patch on the 3.2 stable branch |
 | `3.0` | yes | Latest patch on the 3.0 branch |
 | `3.0-lts` | yes | Same as `3.0`; ISC's long-term support branch |
 
-**`3.2.0` moves, despite looking like a pin.** Every image is rebuilt weekly
-against current Alpine packages — that is how security fixes reach you between
-Kea releases — and the rebuild re-pushes the same version tags with different
-bytes. The Kea version inside `3.2.0` is always 3.2.0, but the bytes are not
-the ones you pulled last month.
-
-That matters in two places. If you pin `3.2.0` expecting reproducibility, you
-do not have it. And a cosign signature is bound to bytes, so last week's
-signature stays valid on last week's index while `3.2.0` has moved off it.
-
-**So there are two ways to pin properly**, and either is fine:
-
-```bash
-# the date-suffixed tag - never reused, readable, and signed like any other
-docker pull ghcr.io/dapalab/kea-dhcp4:3.2.0-20260921
-
-# or the digest, if you want the strongest possible statement
-docker pull ghcr.io/dapalab/kea-dhcp4@sha256:<digest>
-```
-
-The date tag is the one to reach for in a Compose file or a Kubernetes
-manifest: it survives a rebuild, and you can see what it is at a glance.
-Take the moving tags when you want fixes to arrive on their own.
+**`3.2.0` moves, despite looking like a pin.** Every image is rebuilt against
+current Alpine packages — weekly, and again whenever a dependency update
+merges — because that is how security fixes reach you between Kea releases.
+The rebuild re-pushes the same version tags over different bytes. The Kea
+inside `3.2.0` is always 3.2.0; the bytes are not the ones you pulled last
+month.
 
 **There is no `latest` tag, and no bare `3` tag.** Both would silently move a
 DHCP server across major or minor versions. A bare `3` is worse than useless
 here: it would resolve to 3.2, but 3.0 is the LTS and outlives 3.2 by eleven
 months, so pinning `3` for stability would give you the *shorter*-lived branch.
+
+### Which tag should you use?
+
+**If you use Renovate, Dependabot or similar — take a moving tag and let the
+tool pin the digest.**
+
+```yaml
+# renovate.json5
+{ "packageRules": [{ "matchPackageNames": ["ghcr.io/dapalab/kea-**"],
+                     "pinDigests": true }] }
+```
+
+```
+ghcr.io/dapalab/kea-dhcp4:3.2@sha256:...
+```
+
+You get the best of both: the digest makes each deployment exactly
+reproducible, and your bot raises a PR when the digest changes (a rebuild,
+so: Alpine security fixes) or when the version moves on. **Do not point
+Renovate at the stamped tag** — see below.
+
+**If you pin by hand, take the stamped tag.**
+
+```
+ghcr.io/dapalab/kea-dhcp4:3.2.0-20260920-2203
+```
+
+It is never reused, so it means one exact set of bytes forever, and unlike a
+digest you can read it. The trade is real and worth stating plainly: **nothing
+will ever tell you to update it.** You are opting out of security rebuilds
+until you next look. Put a reminder somewhere.
+
+#### Why Renovate cannot follow the stamped tag
+
+Renovate's `docker` versioning treats everything after the first `-` as a
+*compatibility* string, and only offers upgrades that share it. Since every
+rebuild produces a new stamp, nothing is ever compatible with what you have
+pinned. Verified against Renovate's own versioning module:
+
+```
+pinned on 3.2.0                 -> offers 3.2.1     works
+pinned on 3.2                   -> offers 3.4       works
+pinned on 3.2.0-20260920-2203   -> offers NOTHING
+```
+
+It fails silently — no error, just permanent quiet. That is why the moving
+tag plus a pinned digest is the right answer for automated setups.
+
+If you nevertheless want a bot to track stamped tags, `regex` versioning
+works:
+
+```json5
+{
+  "matchPackageNames": ["ghcr.io/dapalab/kea-**"],
+  "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-(?<build>\\d+)-(?<revision>\\d+)$",
+  "allowedVersions": "<3.3.0"
+}
+```
+
+**The `allowedVersions` line is not optional.** Without it, regex versioning
+happily offers `3.0.4-…` → `3.2.0-…`, walking you straight off the LTS branch
+onto the shorter-lived stable one.
 
 ## Running DHCP in a container — read this first
 

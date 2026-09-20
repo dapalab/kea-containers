@@ -335,18 +335,41 @@ Two consequences, neither hypothetical:
    so the supply-chain story in the README implied a guarantee the rebuild
    schedule quietly broke.
 
-**Decision.** Add a date-suffixed tag that is never reused:
+**Decision.** Add a stamped tag that is never reused:
 
 ```
-3.2.0-20260921   immutable
-3.2.0            moves with each rebuild
-3.2              moves
-3.0-lts          moves
+3.2.0-20260920-2203   immutable
+3.2.0                 moves with each rebuild
+3.2                   moves
+3.0-lts               moves
 ```
 
 This follows the pattern ISC already uses on Cloudsmith (`3.1.9-20260527`):
 an immutable tag with the bare version moving on top. It extends D10 rather
 than replacing it — no `latest` and no bare `3` still hold.
+
+**Why the time, and not just the date as ISC does.** ISC releases rarely, so
+a date is unique for them. Here it is not. Images rebuild weekly *and* on
+every automerged Renovate PR, because an Alpine digest or grouped-actions
+merge is a push to `main` and therefore a build. **Four builds ran on
+2026-09-20 alone.** A date-only stamp would have published
+`3.2.0-20260920` four times over different bytes — precisely the property
+the tag exists to provide, inverted. The first attempt at this shipped with
+date-only granularity and was corrected the same evening.
+
+Minute resolution is enough because `concurrency: build-<ref>` serialises
+runs on `main` (no `cancel-in-progress` outside pull requests) and a build
+takes 17+ minutes, so two `fuse` jobs cannot tag in the same minute. That is
+an argument, though, and this project has twice been caught trusting one, so
+`fuse` also queries the registry and **fails if the immutable tag already
+exists**. Overwriting a tag documented as never reused is worse than failing
+a publish. Verified against the live registry: the check reports an existing
+tag as present and an unused one as free.
+
+One consequence to know about: after "Re-run failed jobs", the stamp is
+carried over from the original attempt, so the check will correctly refuse.
+"Re-run all jobs" re-runs the `matrix` job and stamps a fresh time. The error
+message says so.
 
 **Rejected: stop re-pushing the version tags.** That would mean a user on
 `3.2.0` never receives an Alpine security fix, which inverts the point of the
@@ -358,6 +381,60 @@ strongest option and the README still offers them, but a 71-character digest
 in a Compose file is something people avoid, and a pin nobody adopts protects
 nobody. A readable immutable tag is the one that gets used.
 
+### The stamped tag is invisible to Renovate — deliberately, and documented
+
+Raised during review: would a downstream consumer's Renovate still track
+version updates through a stamped tag? **No.** Verified by running the tag
+shapes through Renovate's own `docker` versioning module rather than
+reasoning about it:
+
+| Pinned on | Renovate offers |
+|---|---|
+| `3.2.0` | `3.2.1` |
+| `3.2` | `3.4` |
+| `3.2.0-20260920` | **nothing** |
+| `3.2.0-20260920-2203` | **nothing** |
+
+`docker` versioning treats everything after the first `-` as a
+*compatibility* string and only offers upgrades sharing it;
+`isCompatible("3.2.1-20261001-0417", "3.2.0-20260920-2203")` is `false`. It
+fails **silently** — no error, just permanent quiet.
+
+Note this is a property of stamping at all, not of the added time: date-only
+is equally invisible. So the precision fix costs nothing here.
+
+**This does not argue against the tag, because the footgun is not unique to
+it.** Any immutable pin freezes you; a digest pin freezes you just as hard.
+The real distinction is narrower: Renovate *can* bump a digest pin and
+*cannot* bump a stamped tag. So the two serve different people, and the
+README now routes by audience rather than leaving readers to guess:
+
+- **automated consumers** — a moving tag plus `pinDigests`. Reproducible per
+  deployment, and the bot raises a PR on each rebuild (Alpine fixes) and on
+  each version bump. Strictly better for them than a stamped tag.
+- **manual pinners** — the stamped tag, with the trade stated plainly: it is
+  readable and permanent, and nothing will ever prompt you to move off it.
+
+For anyone who insists on automating against stamped tags, `regex`
+versioning does work, and was verified to: pinned on `3.2.0-20260920-2203`
+it offers both `3.2.0-20261001-0417` and `3.2.1-20261115-0417`. The README
+carries the snippet **with `allowedVersions`**, because without it the same
+config offers `3.0.4-…` → `3.2.0-…` and walks the user off the LTS branch
+onto the shorter-lived stable one.
+
+### Two legacy date-only tags exist, and stay
+
+The first run under this scheme published `3.2.0-20260920` and
+`3.0.4-20260920` before the granularity was corrected. They stay, for a
+reason worth recording: **GHCR has no tag-level delete.** Removing a tag
+means deleting the package *version*, and that version is the same index
+`3.2.0`, `3.2`, `3.0` and `3.0-lts` point at — deleting it would break every
+current tag. That is D17's untagged-children trap wearing a different hat.
+
+They are harmless. Once the format changed they can never be overwritten, so
+they remain permanently immutable and honest: two one-off tags from the first
+run of the scheme.
+
 **Where the date comes from.** The `matrix` job stamps one timestamp for the
 whole run and both the `created` label and the date tag derive from it
 (D21). Deriving the tag with a fresh `date` in `fuse` would let a run that
@@ -366,8 +443,9 @@ why the per-arch `CREATED` stamping introduced with D21's first fix was
 consolidated: amd64 and arm64 were stamping separately, minutes apart.
 
 **Guarded.** `matrix.py check` now asserts the composition of the tag list
-directly — exactly one immutable date tag, no `latest`, no bare major, no
-duplicates — and that guard was confirmed to fire before being trusted. A
+directly — exactly one immutable stamped tag, in first position, no
+`latest`, no bare major, no duplicates — and that guard was confirmed to fire
+before being trusted. A
 published tag cannot be recalled, so this belongs in `lint` rather than in
 review.
 

@@ -373,17 +373,22 @@ jobs:
           CREATED: ${{ needs.matrix.outputs.created }}
         run: |
           set -euo pipefail
-          # The immutable date tag comes from the SAME stamp as the images'
-          # created label, so 3.2.0-20260921 always names a build labelled
-          # 2026-09-21. Deriving it here with a fresh `date` would let the
-          # two disagree on a run that crosses midnight UTC.
+          # The immutable tag comes from the SAME stamp as the images'
+          # created label, so 3.2.0-20260920-2203 always names a build
+          # labelled 2026-09-20T22:03Z. Deriving it here with a fresh `date`
+          # would let the two disagree on a run that crosses midnight UTC.
+          #
+          # Minute resolution, not day: images rebuild on every automerged
+          # Renovate PR as well as weekly, and four builds ran on
+          # 2026-09-20 alone. See docs/DECISIONS.md D10.
           test -n "$CREATED"
-          DATE="$(printf '%s' "${CREATED%%T*}" | tr -d '-')"
-          case "$DATE" in
-            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-            *) echo "::error::bad date stamp derived from CREATED=$CREATED"; exit 1 ;;
+          STAMP="$(printf '%s' "$CREATED" \
+                    | sed -E 's/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}).*$/\1\2\3-\4\5/')"
+          case "$STAMP" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]) ;;
+            *) echo "::error::bad stamp derived from CREATED=$CREATED"; exit 1 ;;
           esac
-          echo "immutable tag date: $DATE"
+          echo "immutable tag stamp: $STAMP"
           for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
             for img in $(./scripts/matrix.py images "$branch"); do
               refs=()
@@ -397,7 +402,7 @@ jobs:
               done
 
               mapfile -t tags < <(./scripts/matrix.py tags "$branch" "$img" \
-                                    --date "$DATE" \
+                                    --stamp "$STAMP" \
                                     --registry "$REGISTRY" --owner "$OWNER")
               targs=()
               for t in "${tags[@]}"; do targs+=(--tag "$t"); done
@@ -405,10 +410,34 @@ jobs:
               echo "::group::kea-${img} (${branch})"
               printf '  tag: %s\n' "${tags[@]}"
               printf '  arch: %s\n' "${refs[@]}"
+
+              # The immutable tag must not already exist. The concurrency
+              # group serialises runs on main and a build takes 17+ minutes,
+              # so two runs cannot tag in the same minute - but that is an
+              # argument, and this repo has been bitten twice by trusting
+              # one. Overwriting a tag documented as never reused is worse
+              # than failing the publish, so prove it instead.
+              immutable=""
+              for t in "${tags[@]}"; do
+                case "$t" in *-"$STAMP") immutable="$t" ;; esac
+              done
+              if [ -z "$immutable" ]; then
+                echo "::error::no immutable tag in the list for kea-${img}"
+                exit 1
+              fi
+              if docker buildx imagetools inspect "$immutable" >/dev/null 2>&1; then
+                echo "::error::immutable tag already exists: ${immutable}"
+                echo "It is documented as never reused, so this run will not"
+                echo "overwrite it. If you re-ran only the failed jobs, the"
+                echo "stamp was carried over from the original attempt - use"
+                echo "'Re-run all jobs' instead, which stamps a fresh time."
+                exit 1
+              fi
+
               docker buildx imagetools create "${targs[@]}" "${refs[@]}"
 
               # Record the INDEX digest. Signing the index covers every tag
-              # pointing at it, so 3.2.0-20260921, 3.2.0 and 3.2 need one
+              # pointing at it, so 3.2.0-20260920-2203, 3.2.0 and 3.2 need one
               # signature between them - and the signature stays valid when a
               # moving tag is later repointed elsewhere, because it is bound
               # to the bytes. That is exactly why the date tag matters: after
