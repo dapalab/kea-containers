@@ -448,3 +448,33 @@ and a command-line `-D` overrides it.
 Setting it explicitly for both branches is deliberate. It makes the permissions
 an intentional property of our build rather than something inherited from
 whichever upstream branch we happen to be compiling.
+
+---
+
+## D15 — OCI image labels
+
+**Decision.** Every image carries the standard `org.opencontainers.image.*`
+labels, with `source` pointing at this repository.
+
+**Why it matters beyond tidiness.** `org.opencontainers.image.source` is what
+links a published GHCR package back to its repository. An unlinked package does
+not inherit the repository's permission model, and the first publish attempt
+failed with:
+
+```
+denied: permission_denied: write_package
+```
+
+despite the job being granted `Packages: write` and `docker login` succeeding.
+We had set **no labels at all**.
+
+**The disclaimer travels with the image.** `vendor` and `description` both state
+that these are unofficial community builds not affiliated with ISC, so
+`docker inspect` carries the disclaimer even for someone who never reads the
+README. That is the right place for it: an image can outlive the context in
+which it was found.
+
+**Dynamic values** (`version`, `revision`, `created`) come from build args the
+workflow supplies from `matrix.kea`, `github.sha` and the build timestamp, so
+every published image records exactly which commit and which Kea release
+produced it.

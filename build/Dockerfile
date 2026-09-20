@@ -13,6 +13,10 @@
 # is carved out of that single install tree and shares one base layer.
 
 ARG ALPINE_REF=alpine:3.24
+ARG KEA_VERSION
+ARG SOURCE_URL=https://github.com/dapalab/kea-containers
+ARG REVISION
+ARG CREATED
 
 ###############################################################################
 # builder - compiles Kea once; its output feeds every image below
@@ -140,6 +144,28 @@ FROM ${ALPINE_REF} AS runtime-base
 ARG KEA_UID=10000
 ARG KEA_GID=10000
 
+ARG KEA_VERSION
+ARG SOURCE_URL
+ARG REVISION
+ARG CREATED
+
+# org.opencontainers.image.source is what links a published GHCR package back
+# to this repository. Without it a package is unlinked, which affects both
+# discoverability and how registry permissions are inherited.
+#
+# The description and vendor deliberately state that these are unofficial
+# community builds, so the disclaimer travels with the image rather than living
+# only in a README someone may never read.
+LABEL org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.url="${SOURCE_URL}" \
+      org.opencontainers.image.documentation="${SOURCE_URL}#readme" \
+      org.opencontainers.image.licenses="MPL-2.0" \
+      org.opencontainers.image.version="${KEA_VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}" \
+      org.opencontainers.image.vendor="dapalab (unofficial community build)" \
+      org.opencontainers.image.description="Unofficial multi-arch container image for ISC Kea DHCP ${KEA_VERSION}, built from PGP-verified upstream source. Not affiliated with or endorsed by Internet Systems Consortium."
+
 RUN set -eux; \
     apk add --no-cache libstdc++ log4cplus libcrypto3 libssl3 tzdata \
         netcat-openbsd mariadb-connector-c libpq; \
@@ -171,6 +197,7 @@ COPY --from=builder /stage/usr/share/licenses/kea/ /usr/share/licenses/kea/
 # you run with --cap-drop=ALL you must add them back explicitly.
 ###############################################################################
 FROM runtime-base AS dhcp4
+LABEL org.opencontainers.image.title="kea-dhcp4"
 COPY --from=builder /stage/usr/sbin/kea-dhcp4 /usr/sbin/kea-dhcp4
 COPY --from=builder /stage/usr/sbin/kea-lfc   /usr/sbin/kea-lfc
 COPY config/kea-dhcp4.conf /etc/kea/kea-dhcp4.conf
@@ -193,6 +220,7 @@ CMD ["/usr/sbin/kea-dhcp4", "-c", "/etc/kea/kea-dhcp4.conf"]
 # kea-dhcp6 - CAP_NET_BIND_SERVICE only; DHCPv6 is UDP multicast, not raw
 ###############################################################################
 FROM runtime-base AS dhcp6
+LABEL org.opencontainers.image.title="kea-dhcp6"
 COPY --from=builder /stage/usr/sbin/kea-dhcp6 /usr/sbin/kea-dhcp6
 COPY --from=builder /stage/usr/sbin/kea-lfc   /usr/sbin/kea-lfc
 COPY config/kea-dhcp6.conf /etc/kea/kea-dhcp6.conf
@@ -214,6 +242,7 @@ CMD ["/usr/sbin/kea-dhcp6", "-c", "/etc/kea/kea-dhcp6.conf"]
 # kea-dhcp-ddns - needs no capabilities at all; ports 53001 and 8000 are >1024
 ###############################################################################
 FROM runtime-base AS dhcp-ddns
+LABEL org.opencontainers.image.title="kea-dhcp-ddns"
 COPY --from=builder /stage/usr/sbin/kea-dhcp-ddns /usr/sbin/kea-dhcp-ddns
 COPY config/kea-dhcp-ddns.conf /etc/kea/kea-dhcp-ddns.conf
 # Ask the daemon for its own status over the unix control socket. This proves
@@ -240,6 +269,7 @@ CMD ["/usr/sbin/kea-dhcp-ddns", "-c", "/etc/kea/kea-dhcp-ddns.conf"]
 # declared volume rather than a private directory.
 ###############################################################################
 FROM runtime-base AS ctrl-agent
+LABEL org.opencontainers.image.title="kea-ctrl-agent"
 COPY --from=builder /stage/usr/sbin/kea-ctrl-agent /usr/sbin/kea-ctrl-agent
 COPY config/kea-ctrl-agent.conf /etc/kea/kea-ctrl-agent.conf
 
@@ -277,6 +307,7 @@ CMD ["/usr/sbin/kea-ctrl-agent", "-c", "/etc/kea/kea-ctrl-agent.conf"]
 # perfdhcp gets CAP_NET_RAW so it can craft DHCPv4 packets as a non-root user.
 ###############################################################################
 FROM runtime-base AS tools
+LABEL org.opencontainers.image.title="kea-tools"
 COPY --from=builder /stage/usr/sbin/perfdhcp   /usr/sbin/perfdhcp
 COPY --from=builder /stage/usr/sbin/kea-lfc    /usr/sbin/kea-lfc
 COPY --from=builder /stage/usr/sbin/kea-admin  /usr/sbin/kea-admin

@@ -113,14 +113,20 @@ jobs:
           ALPINE_REF: ${{ matrix.alpineRef }}
           BRANCH: ${{ matrix.branch }}
           ARCH: ${{ matrix.arch }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+          REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; export CREATED
           for img in $IMAGES; do
             echo "::group::build kea-$img (test)"
             docker buildx build \
               --target "$img" \
               --build-arg "KEA_VERSION=$KEA" \
               --build-arg "ALPINE_REF=$ALPINE_REF" \
+              --build-arg "SOURCE_URL=$SOURCE_URL" \
+              --build-arg "REVISION=$REVISION" \
+              --build-arg "CREATED=$CREATED" \
               --cache-from "type=gha,scope=${BRANCH}-${ARCH}" \
               --cache-to   "type=gha,scope=${BRANCH}-${ARCH},mode=max" \
               --load -t "kea-$img:test" \
@@ -153,9 +159,12 @@ jobs:
           ALPINE_REF: ${{ matrix.alpineRef }}
           BRANCH: ${{ matrix.branch }}
           ARCH: ${{ matrix.arch }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+          REVISION: ${{ github.sha }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; export CREATED
           mkdir -p /tmp/digests
           for img in $IMAGES; do
             echo "::group::push kea-$img@digest"
@@ -163,6 +172,9 @@ jobs:
               --target "$img" \
               --build-arg "KEA_VERSION=$KEA" \
               --build-arg "ALPINE_REF=$ALPINE_REF" \
+              --build-arg "SOURCE_URL=$SOURCE_URL" \
+              --build-arg "REVISION=$REVISION" \
+              --build-arg "CREATED=$CREATED" \
               --cache-from "type=gha,scope=${BRANCH}-${ARCH}" \
               --provenance=true --sbom=true \
               --metadata-file /tmp/meta.json \
