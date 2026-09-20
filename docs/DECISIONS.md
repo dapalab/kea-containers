@@ -534,3 +534,44 @@ the upstream watcher opens an issue when one appears.
 Verified against the real files: the manager produces exactly two Kea
 dependencies with the right names and values, two `alpineRef` matches, and one
 Dockerfile `ARG` match.
+
+---
+
+## D17 — Untagged package versions are NOT garbage (deferred cleanup)
+
+**Decision.** No automated package cleanup for now. Recorded here because the
+obvious implementation destroys every published image.
+
+**The trap.** A multi-arch tag points at an OCI **index**. Only the index
+carries the tag; the per-architecture manifests and the SBOM/provenance
+attestations beneath it are untagged by design. Measured on the live packages:
+
+```
+kea-dhcp4:3.2  ->  sha256:2396fd43...  amd64/linux    tagcount=0
+                   sha256:90919455...  arm64/linux    tagcount=0
+                   sha256:ef5e6d2b...  attestation    tagcount=0
+                   sha256:b1e74fe2...  attestation    tagcount=0
+```
+
+Every child of a working tag is untagged. So the usual "delete all untagged
+versions" retention action - the first thing anyone reaches for - would delete
+the amd64 and arm64 manifests out from under `kea-dhcp4:3.2`. The tag would
+survive, pointing at an index whose children are gone, and every pull would
+fail in a way that looks like registry corruption.
+
+**If cleanup is ever implemented**, the keep-set must be computed by
+**reachability**, not by tag presence:
+
+1. list every tag on the package
+2. resolve each to its index and collect all referenced child digests
+3. keep = tagged versions **plus everything they reference**
+4. delete only what is outside that set **and** older than a grace period
+
+**The grace period is a promise, not a nicety.** The README tells people to pin
+digests for anything they care about. Deleting an old digest breaks exactly the
+users who followed that advice. 90 days means a pin survives a quarter.
+
+**Why deferred.** Public GHCR storage is free, so the cost is navigational
+clutter rather than money. Accumulation runs at roughly 7 versions per package
+per weekly rebuild - about 360 a year each, driven by the rebuild schedule
+rather than by releases. Tolerable for a year or two.
