@@ -61,9 +61,30 @@ check_report() {
     fail "$1 (pattern: $2)"
   fi
 }
-check_report "OpenSSL is the crypto backend" 'crypto.*openssl|openssl.*[0-9]'
-check_report "MySQL backend absent"          'MySQL:( |\t)*(no|disabled)?$|MySQL.*no'
-check_report "PostgreSQL backend absent"     'PostgreSQL:( |\t)*(no|disabled)?$|PostgreSQL.*no'
+check_report "OpenSSL is the crypto backend" 'OpenSSL:.*[0-9]'
+
+# The DB backends are compiled in. The daemon links libmariadb and libpq
+# directly - it never shells out to the mysql/psql CLI tools, which is why
+# those clients are not in any image. See docs/DECISIONS.md D13.
+check_report "MySQL backend compiled in"      'MySQL:[[:space:]]+[^n]'
+check_report "PostgreSQL backend compiled in" 'PostgreSQL:[[:space:]]+[^n]'
+
+# Prove the backend is actually registered, not merely reported. A config
+# naming an uncompiled backend is rejected at parse time, so acceptance here
+# means the lease manager really knows about it.
+for be in mysql postgresql; do
+  cfg="{\"Dhcp4\":{\"interfaces-config\":{\"interfaces\":[]},\"lease-database\":{\"type\":\"$be\",\"name\":\"kea\",\"host\":\"db.invalid\",\"user\":\"u\",\"password\":\"p\"},\"subnet4\":[]}}"
+  out="$(printf '%s' "$cfg" | docker run --rm -i "$DHCP4_IMAGE" \
+          sh -c 'cat > /tmp/db.conf; /usr/sbin/kea-dhcp4 -t /tmp/db.conf' 2>&1 || true)"
+  # -t does not dial the database, so an unreachable host is fine here. What
+  # we are ruling out is "unknown backend type", which is what an uncompiled
+  # backend produces.
+  if grep -qiE 'unsupported database type|not supported|unknown backend|invalid type' <<<"$out"; then
+    printf '%s\n' "$out" | sed 's/^/      /'
+    fail "$be backend is not registered in the lease manager"
+  fi
+  pass "$be backend registered in the lease manager"
+done
 
 ###############################################################################
 info "Gate 3: config validation (-t)"
@@ -109,9 +130,13 @@ case "$LOGS" in
 esac
 pass "kea-dhcp4 started and bound its socket"
 
+# -R 20 simulates 20 distinct clients. Without it perfdhcp reuses a single MAC,
+# so the server answers every request with the SAME address (DHCP4_LEASE_REUSE
+# in the logs) and the test proves only that one handshake works - not that the
+# pool allocates. With it, we can assert distinct addresses were handed out.
 set +e
 PERF="$(docker run --rm --name "$CLI" --network "$NET" "$TOOLS_IMAGE" \
-  /usr/sbin/perfdhcp -4 -r 10 -n 50 -p 20 "$SRV_IP" 2>&1)"
+  /usr/sbin/perfdhcp -4 -R 20 -r 10 -n 50 -p 20 "$SRV_IP" 2>&1)"
 PERF_RC=$?
 set -e
 printf '%s\n' "$PERF" | sed 's/^/      /'
@@ -165,7 +190,25 @@ case "$LOGS" in
     fail "server never logged a lease allocation" ;;
 esac
 
-LEASES="$(docker exec "$SRV" sh -c 'wc -l < /var/lib/kea/kea-leases4.csv' 2>/dev/null || echo 0)"
-[ "$LEASES" -gt 1 ] && pass "lease file contains $((LEASES - 1)) lease record(s)"
+# Count DISTINCT addresses in the memfile CSV, not rows: memfile appends a row
+# per lease update, so a row count can look healthy while the server has been
+# handing the same address to one client over and over.
+CSV="$(docker exec "$SRV" cat /var/lib/kea/kea-leases4.csv 2>/dev/null || true)"
+DISTINCT="$(printf '%s\n' "$CSV" | tail -n +2 | cut -d, -f1 | grep -cE '^172\.31\.77\.' || true)"
+UNIQUE="$(printf '%s\n' "$CSV" | tail -n +2 | cut -d, -f1 | grep -E '^172\.31\.77\.' | sort -u | wc -l)"
+: "${UNIQUE:=0}"
+
+[ "$UNIQUE" -ge 5 ] \
+  || fail "only $UNIQUE distinct address(es) allocated - the pool is not allocating"
+pass "$UNIQUE distinct addresses allocated from the pool ($DISTINCT lease rows)"
+
+# Every address must fall inside the configured pool, 172.31.77.100-200.
+OUTSIDE="$(printf '%s\n' "$CSV" | tail -n +2 | cut -d, -f1 | grep -E '^172\.31\.77\.' \
+           | awk -F. '$4 < 100 || $4 > 200' | head -3)"
+if [ -n "$OUTSIDE" ]; then
+  printf '      %s\n' "$OUTSIDE"
+  fail "addresses allocated outside the configured pool"
+fi
+pass "all allocated addresses fall within the configured pool"
 
 printf '\n\033[32mAll gates passed.\033[0m\n'

@@ -266,9 +266,15 @@ and removes the question.
 
 ---
 
-## D13 — Deferred: database backends
+## D13 — Database backends: enabled
 
-**Decision.** memfile only in v1.
+**Decision.** MySQL and PostgreSQL backends are compiled in. `kea-tools` ships
+`kea-admin` together with the `mysql` and `psql` clients it shells out to, and
+the schema SQL.
+
+**Revised from the original non-goal**, which read "no MySQL/PostgreSQL support
+in v1 *unless it is nearly free to add*". It is: measured below. The condition
+was met and should have been acted on the first time it was measured.
 
 **Cost of adding them later, measured from Alpine 3.24 `APKINDEX`:**
 
@@ -279,9 +285,43 @@ and removes the question.
 
 About **+1 MB on the runtime image** and two Meson flags. Kea discovers both
 purely via pkg-config (`dependency('mariadb')`, `dependency('libpq')`), so
-there is no `pg_config` hunting. This is close enough to free that the non-goal
-is worth revisiting — recorded here so the decision is informed rather than
-inherited.
+there is no `pg_config` hunting.
+
+The daemons link `libmariadb` and `libpq` **directly** - they never invoke a
+CLI client. So the daemon images need no client tooling at all, and a build
+report showing `MySQL: yes` plus a config using `type: mysql` surviving
+`kea-dhcp4 -t` is sufficient proof the backend is compiled in and registered.
+
+### Why `kea-tools` carries the clients
+
+`kea-admin` shells out to `mysql` (30 call sites) and `psql` (5). Shipping it
+without them would make it a trap: present, apparently usable, unable to
+perform its primary function.
+
+Installing the full packages costs **65.6 MB**, because `mariadb-client` is
+seven near-identical ~5 MB binaries (`mariadb-dump`, `mariadb-check`,
+`mariadb-import`, ...) that `kea-admin` never calls. Copying just the two
+binaries it does call costs **8.8 MB**, measured against an image mirroring
+`runtime-base`:
+
+| | Image | Marginal |
+|---|---|---|
+| runtime-base equivalent | 20.8 MB | — |
+| **+ `mariadb` and `psql` binaries** | 29.6 MB | **+8.8 MB** |
+| + full client packages | 86.4 MB | +65.6 MB |
+
+Their other dependencies - `libcrypto`, `libssl`, `libstdc++`, `libz`,
+`libgcc` - are already in `runtime-base`, so they add nothing. `mysql` is a
+symlink to `mariadb`; the deprecation notice it prints goes to **stderr only**,
+verified, so `kea-admin`'s stdout parsing is unaffected.
+
+### The size question was the wrong question
+
+`kea-tools` is not deployed. It is a `docker run --rm` for a one-off task, on a
+machine that is not serving DHCP, and it shares `runtime-base` with the daemon
+images a user already has - so its real cost is the delta over layers already
+on disk, paid once. The cherry-pick is kept because it is free, not because the
+size mattered.
 
 ---
 
@@ -365,3 +405,46 @@ socket path that a real macvlan deployment uses. Testing raw sockets requires
 an L2 segment with broadcast, which is not reproducible in a standard CI
 sandbox. The `CAP_NET_RAW` grant is verified separately (see above), but the
 broadcast path itself is not covered.
+
+---
+
+## D14 — `install_umask=0022` (found the hard way)
+
+**Decision.** Pass `-D install_umask=0022` to `meson setup`.
+
+**Why.** Kea **3.0.x** sets `'install_umask=0027'` in its `project()`
+`default_options`. That installs every library as `0750 root:root`. Our daemons
+run as UID 10000, so they cannot read their own libraries and die at startup
+with:
+
+```
+Error loading shared library libkea-util.so.103: Permission denied
+Error relocating /usr/sbin/kea-dhcp4: ... symbol not found
+```
+
+The relocation errors are a red herring — they are downstream of the loader
+failing to open the libraries at all.
+
+**Kea 3.2 removed that global umask**, replacing it with explicit
+`install_mode: 'rwxr-x---'` on the state directories only. So 3.2 installs
+0755 and works, while 3.0 does not. This is why the CI matrix failed on exactly
+one branch, on both architectures.
+
+**ISC never hits this** because their images run everything as root. It is a
+direct consequence of D8 (non-root), and a good example of why the two stable
+branches cannot be assumed to build identically.
+
+**Verified rather than assumed**, with a minimal Meson project:
+
+| | installed mode |
+|---|---|
+| `install_umask=0027` | `750` |
+| `install_umask=0022` | `755` |
+| `project()` says `0027`, CLI passes `0022` | **`755`** — CLI wins |
+
+That last row is the one that matters: Kea sets the value in `default_options`,
+and a command-line `-D` overrides it.
+
+Setting it explicitly for both branches is deliberate. It makes the permissions
+an intentional property of our build rather than something inherited from
+whichever upstream branch we happen to be compiling.
