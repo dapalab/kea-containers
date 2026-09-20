@@ -109,7 +109,21 @@ RUN set -eux; \
 # already present in runtime-base, so they add nothing.
 ###############################################################################
 FROM ${ALPINE_REF} AS db-clients
-RUN apk add --no-cache mariadb-client postgresql17-client
+# pipefail matters below: without it, a failing psql or apk in a pipeline
+# is masked by a successful sed, and the version guard silently passes.
+SHELL ["/bin/ash", "-o", "pipefail", "-c"]
+# Alpine carries postgresql16/17/18 concurrently and moves the recommended
+# default over time, so a hardcoded major WILL go stale. Pin it to match the
+# libpq that runtime-base installs, and assert the match rather than trusting
+# it: a psql that disagrees with the library the daemons link is a confusing
+# thing to hand someone who is already debugging a database problem.
+RUN set -eux; \
+    apk add --no-cache mariadb-client postgresql18-client; \
+    psql_major="$(psql --version | sed -nE 's/.* ([0-9]+)\..*/\1/p')"; \
+    libpq_major="$(apk list --installed libpq | sed -nE 's/^libpq-([0-9]+)\..*/\1/p' | head -1)"; \
+    echo "psql major=${psql_major}  libpq major=${libpq_major}"; \
+    test -n "${psql_major}"; \
+    test "${psql_major}" = "${libpq_major}"
 
 ###############################################################################
 # runtime-base - one shared layer behind every published image
