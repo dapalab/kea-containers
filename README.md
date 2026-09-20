@@ -56,21 +56,40 @@ the image size. Nothing depends on it — see
 
 | Tag | Moves? | Meaning |
 |---|---|---|
-| `3.2.0` | no | Exact Kea version |
+| `3.2.0-20260921` | **no — never reused** | Kea 3.2.0 as built on that date |
+| `3.2.0` | yes | Newest build of Kea 3.2.0 |
 | `3.2` | yes | Latest patch on the 3.2 stable branch |
 | `3.0` | yes | Latest patch on the 3.0 branch |
 | `3.0-lts` | yes | Same as `3.0`; ISC's long-term support branch |
+
+**`3.2.0` moves, despite looking like a pin.** Every image is rebuilt weekly
+against current Alpine packages — that is how security fixes reach you between
+Kea releases — and the rebuild re-pushes the same version tags with different
+bytes. The Kea version inside `3.2.0` is always 3.2.0, but the bytes are not
+the ones you pulled last month.
+
+That matters in two places. If you pin `3.2.0` expecting reproducibility, you
+do not have it. And a cosign signature is bound to bytes, so last week's
+signature stays valid on last week's index while `3.2.0` has moved off it.
+
+**So there are two ways to pin properly**, and either is fine:
+
+```bash
+# the date-suffixed tag - never reused, readable, and signed like any other
+docker pull ghcr.io/dapalab/kea-dhcp4:3.2.0-20260921
+
+# or the digest, if you want the strongest possible statement
+docker pull ghcr.io/dapalab/kea-dhcp4@sha256:<digest>
+```
+
+The date tag is the one to reach for in a Compose file or a Kubernetes
+manifest: it survives a rebuild, and you can see what it is at a glance.
+Take the moving tags when you want fixes to arrive on their own.
 
 **There is no `latest` tag, and no bare `3` tag.** Both would silently move a
 DHCP server across major or minor versions. A bare `3` is worse than useless
 here: it would resolve to 3.2, but 3.0 is the LTS and outlives 3.2 by eleven
 months, so pinning `3` for stability would give you the *shorter*-lived branch.
-
-For anything you actually care about, **pin the digest**:
-
-```bash
-docker pull ghcr.io/dapalab/kea-dhcp4@sha256:<digest>
-```
 
 ## Running DHCP in a container — read this first
 

@@ -10,7 +10,7 @@ out per image would recompile Kea for each one.
 Usage:
     matrix.py matrix          GitHub Actions matrix for the build jobs
     matrix.py images  BRANCH  image suffixes for a branch
-    matrix.py tags    BRANCH IMAGE [--registry REG --owner OWNER]
+    matrix.py tags    BRANCH IMAGE [--date YYYYMMDD] [--registry REG --owner OWNER]
     matrix.py check           validate versions.json
 """
 import argparse
@@ -29,6 +29,7 @@ DOCKERFILE = ROOT / "build" / "Dockerfile"
 CONFIG_DIR = ROOT / "build" / "config"
 STAGE = re.compile(r"^FROM\s+\S+\s+AS\s+(\S+)\s*$", re.M)
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+DATESTAMP = re.compile(r"^\d{8}$")
 DIGEST = re.compile(r"^alpine:[\w.]+@sha256:[0-9a-f]{64}$")
 
 
@@ -78,6 +79,33 @@ def check():
     lts = [b for b in branches.values() if b.get("lts")]
     if len(lts) > 1:
         errors.append("more than one branch marked lts")
+
+    # Tag composition. These are properties the published tags must have, not
+    # restatements of what tags() does - a refactor that broke any of them
+    # would publish a misleading tag, and a published tag cannot be recalled.
+    for bid, b in branches.items():
+        for img in b.get("images", []):
+            names = [t.rsplit(":", 1)[1]
+                     for t in tags(bid, img, "ghcr.io", "owner", date="20260101")]
+            where = f"tags({bid}, {img})"
+            if "latest" in names:
+                errors.append(f"{where}: 'latest' must never be published (D10)")
+            major = bid.split(".")[0]
+            if major in names:
+                errors.append(
+                    f"{where}: bare major tag {major!r} must never be published - it "
+                    f"would resolve to the shorter-lived stable branch (D10)")
+            dated = [n for n in names if n.endswith("-20260101")]
+            if len(dated) != 1:
+                errors.append(
+                    f"{where}: expected exactly one immutable date tag, got {dated}")
+            elif dated[0] != f"{b['kea']}-20260101":
+                errors.append(
+                    f"{where}: date tag {dated[0]!r} should be {b['kea']}-20260101")
+            if b["kea"] not in names or bid not in names:
+                errors.append(f"{where}: missing {b['kea']!r} or {bid!r} in {names}")
+            if len(names) != len(set(names)):
+                errors.append(f"{where}: duplicate tags in {names}")
     if errors:
         for e in errors:
             print(f"error: {e}", file=sys.stderr)
@@ -86,12 +114,31 @@ def check():
     return 0
 
 
-def tags(bid, image, registry, owner):
+def tags(bid, image, registry, owner, date=None):
+    """Tag list for one image on one branch.
+
+    Exactly one tag here is immutable. The weekly rebuild re-pushes the same
+    Kea versions against fresh Alpine packages, so EVERY version-shaped tag
+    moves - including `3.2.0`, which reads like a pin and is not one. The
+    date-suffixed tag `3.2.0-20260920` is never reused, so there is something
+    to pin that actually holds still, and a cosign signature made against it
+    keeps resolving to the bytes it was made over. See docs/DECISIONS.md D10.
+
+    No bare major tag and no `latest`, unchanged: a bare `3` would resolve to
+    the shorter-lived stable branch while the LTS outlives it.
+    """
     b = load()[bid]
-    names = [b["kea"], bid]
+    names = []
+    if date:
+        # A date tag is permanent once pushed - it can never be corrected,
+        # only abandoned. Validate it rather than discover the mistake in
+        # the registry.
+        if not DATESTAMP.match(date):
+            raise ValueError(f"--date must be YYYYMMDD, got {date!r}")
+        names.append(f"{b['kea']}-{date}")
+    names += [b["kea"], bid]
     if b.get("lts"):
         names.append(f"{bid}-lts")
-    # No bare major tag and no "latest" - see docs/DECISIONS.md D10.
     return [f"{registry}/{owner}/kea-{image}:{t}" for t in names]
 
 
@@ -103,6 +150,7 @@ def main():
     q = sub.add_parser("images"); q.add_argument("branch")
     t = sub.add_parser("tags")
     t.add_argument("branch"); t.add_argument("image")
+    t.add_argument("--date", help="YYYYMMDD; adds the immutable date-suffixed tag")
     t.add_argument("--registry", default="ghcr.io"); t.add_argument("--owner", default="dapalab")
     a = p.parse_args()
 
@@ -125,7 +173,11 @@ def main():
     elif a.cmd == "images":
         print(" ".join(load()[a.branch]["images"]))
     elif a.cmd == "tags":
-        print("\n".join(tags(a.branch, a.image, a.registry, a.owner)))
+        try:
+            print("\n".join(tags(a.branch, a.image, a.registry, a.owner, a.date)))
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

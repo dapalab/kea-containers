@@ -317,6 +317,60 @@ their intent. `3` communicates nothing `3.2` does not, and misleads.
 Note ISC does publish `latest`, currently pointing at 3.2.0 while 3.0 is the
 LTS — exactly the trap described above.
 
+### Amendment, 2026-09-20 — `3.2.0` was a moving tag pretending not to be
+
+The reasoning above is unchanged and stays. What it missed is that the scheme
+had **no immutable tag at all**.
+
+The weekly rebuild (D14) re-pushes every tag with different bytes, by design —
+that is how Alpine security fixes reach users between Kea releases. So
+`3.2.0`, which reads as a pinned version, moves every Monday. The README
+stated outright that it did not.
+
+Two consequences, neither hypothetical:
+
+1. Pinning `3.2.0` for reproducibility does not give reproducibility.
+2. A cosign signature is bound to bytes. After a rebuild, the signature on
+   last week's index is still valid, but `3.2.0` no longer resolves to it —
+   so the supply-chain story in the README implied a guarantee the rebuild
+   schedule quietly broke.
+
+**Decision.** Add a date-suffixed tag that is never reused:
+
+```
+3.2.0-20260921   immutable
+3.2.0            moves with each rebuild
+3.2              moves
+3.0-lts          moves
+```
+
+This follows the pattern ISC already uses on Cloudsmith (`3.1.9-20260527`):
+an immutable tag with the bare version moving on top. It extends D10 rather
+than replacing it — no `latest` and no bare `3` still hold.
+
+**Rejected: stop re-pushing the version tags.** That would mean a user on
+`3.2.0` never receives an Alpine security fix, which inverts the point of the
+weekly rebuild. Moving tags are correct here; what was missing was somewhere
+to stand still.
+
+**Rejected: tell people to use digests and leave it.** Digests are the
+strongest option and the README still offers them, but a 71-character digest
+in a Compose file is something people avoid, and a pin nobody adopts protects
+nobody. A readable immutable tag is the one that gets used.
+
+**Where the date comes from.** The `matrix` job stamps one timestamp for the
+whole run and both the `created` label and the date tag derive from it
+(D21). Deriving the tag with a fresh `date` in `fuse` would let a run that
+crosses midnight UTC label an image one day and tag it the next. It is also
+why the per-arch `CREATED` stamping introduced with D21's first fix was
+consolidated: amd64 and arm64 were stamping separately, minutes apart.
+
+**Guarded.** `matrix.py check` now asserts the composition of the tag list
+directly — exactly one immutable date tag, no `latest`, no bare major, no
+duplicates — and that guard was confirmed to fire before being trusted. A
+published tag cannot be recalled, so this belongs in `lint` rather than in
+review.
+
 ---
 
 ## D11 — Native runners, not QEMU

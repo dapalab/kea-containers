@@ -124,10 +124,25 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
+      created: ${{ steps.stamp.outputs.created }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: gen
         run: echo "matrix=$(./scripts/matrix.py matrix)" >> "$GITHUB_OUTPUT"
+
+      # ONE timestamp for the whole run, stamped here because this job runs
+      # before every other. It does two jobs:
+      #
+      #   1. org.opencontainers.image.created, identical in the test build and
+      #      the push build (D21) AND identical across amd64 and arm64, which
+      #      it was not when each build job stamped its own.
+      #   2. the immutable date-suffixed tag applied in fuse (D10), so the tag
+      #      and the label agree by construction rather than by coincidence.
+      #
+      # A run that crosses midnight UTC therefore gets one date throughout,
+      # rather than amd64 landing on one day and the tag on the next.
+      - id: stamp
+        run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
   build:
@@ -153,14 +168,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ONE timestamp for BOTH builds below. It was previously computed
-      # separately in each step, minutes apart, and it feeds the
-      # org.opencontainers.image.created LABEL - so the label layer differed
-      # and the image that passed the gates was not the image that got
-      # published. See docs/DECISIONS.md D21.
-      - name: Stamp the build time
-        run: echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
-
       # Build every image for this branch locally first. The builder stage
       # compiles Kea once; the per-image targets come out of that same cache,
       # which is why this is one job rather than one per image.
@@ -173,8 +180,11 @@ jobs:
           ARCH: ${{ matrix.arch }}
           SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
           REVISION: ${{ github.sha }}
+          # One stamp for the whole run - see the matrix job.
+          CREATED: ${{ needs.matrix.outputs.created }}
         run: |
           set -euo pipefail
+          test -n "$CREATED"
           mkdir -p /tmp/tested
           for img in $IMAGES; do
             echo "::group::build kea-$img (test)"
@@ -228,8 +238,10 @@ jobs:
           SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
           REVISION: ${{ github.sha }}
           OWNER: ${{ github.repository_owner }}
+          CREATED: ${{ needs.matrix.outputs.created }}
         run: |
           set -euo pipefail
+          test -n "$CREATED"
           mkdir -p /tmp/digests
           for img in $IMAGES; do
             echo "::group::push kea-$img@digest"
@@ -358,8 +370,20 @@ jobs:
       - name: Create manifest lists and apply tags
         env:
           OWNER: ${{ github.repository_owner }}
+          CREATED: ${{ needs.matrix.outputs.created }}
         run: |
           set -euo pipefail
+          # The immutable date tag comes from the SAME stamp as the images'
+          # created label, so 3.2.0-20260921 always names a build labelled
+          # 2026-09-21. Deriving it here with a fresh `date` would let the
+          # two disagree on a run that crosses midnight UTC.
+          test -n "$CREATED"
+          DATE="$(printf '%s' "${CREATED%%T*}" | tr -d '-')"
+          case "$DATE" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+            *) echo "::error::bad date stamp derived from CREATED=$CREATED"; exit 1 ;;
+          esac
+          echo "immutable tag date: $DATE"
           for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
             for img in $(./scripts/matrix.py images "$branch"); do
               refs=()
@@ -373,6 +397,7 @@ jobs:
               done
 
               mapfile -t tags < <(./scripts/matrix.py tags "$branch" "$img" \
+                                    --date "$DATE" \
                                     --registry "$REGISTRY" --owner "$OWNER")
               targs=()
               for t in "${tags[@]}"; do targs+=(--tag "$t"); done
@@ -383,9 +408,12 @@ jobs:
               docker buildx imagetools create "${targs[@]}" "${refs[@]}"
 
               # Record the INDEX digest. Signing the index covers every tag
-              # pointing at it, so 3.2 and 3.2.0 need one signature between
-              # them - and the signature stays valid when a moving tag is
-              # later repointed elsewhere, because it is bound to the bytes.
+              # pointing at it, so 3.2.0-20260921, 3.2.0 and 3.2 need one
+              # signature between them - and the signature stays valid when a
+              # moving tag is later repointed elsewhere, because it is bound
+              # to the bytes. That is exactly why the date tag matters: after
+              # next week's rebuild the signature still resolves through the
+              # date tag, while 3.2.0 has moved on.
               idx="$(docker buildx imagetools inspect "${tags[0]}" \
                        --format '{{.Manifest.Digest}}')"
               echo "${REGISTRY}/${OWNER}/kea-${img}@${idx}" >> /tmp/sign-refs.txt
