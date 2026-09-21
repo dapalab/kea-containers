@@ -30,6 +30,12 @@
   schedule: ['at any time'],
 
   labels: ['dependencies'],
+
+  // Ask for a review on every PR that doesn't merge itself: Kea versions,
+  // Alpine versions, runner images, security alerts, and anything no rule
+  // covers. Renovate skips reviewers on automerged PRs (assignAutomerge is
+  // off by default), so the automatic updates don't notify anyone.
+  reviewers: ['dapalab'],
   prConcurrentLimit: 5,
   prHourlyLimit: 0,
 
