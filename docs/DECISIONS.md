@@ -1362,9 +1362,20 @@ the fraction guard caught what the cross-check should have, the cross-check
 caught what the `Link` parser should have. Each now has a case that only it can
 catch, and the pagination guards are also asserted on `tag_list()` alone.
 
-**Still manual, still dry by default.** Nothing schedules this. The first real
-run is a deliberate one: `kea-ctrl-agent` first, then confirm all five images
-still pull and `cosign verify` still passes, then the rest.
+**Still manual, still dry by default.** Nothing schedules this.
+
+**First real run, 2026-09-21**, with no build in flight and
+`--max-fraction 0.55`. `kea-ctrl-agent` first: 65 of 154 deleted, matching the
+predicted breakdown exactly (30 signature versions and 21 manifests of the
+three pre-stamp builds, 14 wrapper indexes). Then checked before going on: every
+tag resolved, every manifest it references returned 200, `cosign verify` passed
+on `:3.0` and on its arm64 digest, and `:3.0` pulled. Then the other four:
+130 of 308 each — exactly double, as two branches should be — and the same
+checks across all five packages. 585 versions removed in total; a second run
+at the default 0.25 finds nothing in any package.
+
+That checker was itself shown to go red first: it reported problems against a
+package that does not exist, rather than "0 tags checked, all good".
 
 ---
 
