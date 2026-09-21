@@ -414,7 +414,8 @@ replacing it: still no `latest` and no bare `3`.
 **Why a time and not just a date, as ISC uses.** ISC releases rarely, so a
 date is unique for them. Here it isn't: images rebuild weekly *and* whenever
 a Renovate update merges, since an Alpine digest or GitHub Actions bump is a
-push to `main` and so a build. **Four builds ran on 2026-09-20 alone.** A
+push to `main` and so a build. **Four builds ran on 2026-09-20 alone** (as it
+turned out, all from our own pushes: see D16's amendment). A
 date-only stamp would have published `3.2.0-20260920` four times with
 different contents, the opposite of what the tag is for. The first version of
 this change did use date-only stamps; we corrected it the same evening.
@@ -809,6 +810,32 @@ watcher opens an issue when one appears.
 We checked this against the real files: the manager finds exactly two Kea
 dependencies with the right names and values, two `alpineRef` matches and one
 Dockerfile `ARG` match.
+
+### Amendment, 2026-09-21: Renovate had never opened a PR
+
+A forced update from the dashboard created a branch but no PR, which led us to
+look properly. Renovate had **never** opened a PR or landed a commit here,
+while every one of its workflow runs reported success. So no Alpine digest or
+action update had ever arrived through it, and none of the builds on
+2026-09-20 came from it; they were all our own pushes. (The Monday rebuild
+was still picking up Alpine package fixes, so the images hadn't stood still.)
+
+A debug run showed why. Every update rule here has a minimum release age, so
+Renovate sets a `renovate/stability-days` status on each branch. The App had
+no permission to set commit statuses:
+
+```
+POST .../statuses/<sha> = statusCode=403
+GitHub failure: Resource not accessible by integration
+Caught error setting branch status - aborting
+Repository result: repository-changed
+```
+
+Renovate then abandons the **whole run**, not just that branch, and exits
+successfully, so nothing looked wrong. The fix is one more permission for
+the App: **Commit statuses: Read and write**, alongside Contents, Pull
+requests, Issues and Workflows. It's the same pattern this log keeps finding:
+a job that had never been seen to do its job, reporting success.
 
 ---
 

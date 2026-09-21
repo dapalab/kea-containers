@@ -10,16 +10,20 @@
 # smoke tests.
 #
 # The App token is created for each run and expires within an hour; only the
-# private key is stored. The App needs write access to Contents, Pull requests
-# and Issues, and also to Workflows, because Renovate edits
-# .github/workflows/*.yml to update pinned actions. That last one is easy to
-# miss, and the error it gives is confusing. See D16.
+# private key is stored. The App needs write access to Contents, Pull
+# requests, Issues and Commit statuses, and also to Workflows, because
+# Renovate edits .github/workflows/*.yml to update pinned actions.
+#
+# Workflows and Commit statuses are both easy to miss. Without Commit
+# statuses, Renovate can't set its renovate/stability-days check, abandons
+# the whole run, and still reports success; that went unnoticed until
+# 2026-09-21. See D16.
 name: renovate
 
 on:
   schedule:
-    # Daily, at a different time from the other scheduled jobs (the scan at
-    # 02:48, the Monday rebuild at 04:17 and the Thursday upstream watcher at
+    # Daily, at a different time from the other scheduled jobs (the Monday
+    # rebuild at 04:17, the scan at 05:53 and the Thursday upstream watcher at
     # 06:42), so they're easy to tell apart.
     - cron: '23 5 * * *'
   workflow_dispatch:
