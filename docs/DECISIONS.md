@@ -1365,3 +1365,38 @@ catch, and the pagination guards are also asserted on `tag_list()` alone.
 **Still manual, still dry by default.** Nothing schedules this. The first real
 run is a deliberate one: `kea-ctrl-agent` first, then confirm all five images
 still pull and `cosign verify` still passes, then the rest.
+
+---
+
+## D27 — Check every image before tagging any
+
+**Decision.** `fuse` runs in two passes. Pass 1 checks every (branch, image)
+pair — both architecture digests present, the immutable tag not already taken
+— and writes a plan. Pass 2 applies it. Nothing is tagged unless every pair
+passed.
+
+**Why.** Tagging was atomic across architectures (nothing is tagged until
+both arches are pushed) but not across images: checks and
+`imagetools create` sat in the same loop. Demonstrated by running the step
+from `build.yml` against a stub `docker`, with the *last* image
+(`kea-tools`, 3.0) failing its check:
+
+| Failure on the last image | Old step | New step |
+|---|---|---|
+| arm64 digest missing | 8 of 9 images retagged, then exit 1 | 0 retagged, exit 1 |
+| immutable tag already exists | 8 of 9 images retagged, then exit 1 | 0 retagged, exit 1 |
+
+Eight retagged images and one not is a version skew across daemons that share
+a lease database and, under HA, peer with each other — and it is silent,
+because every image still pulls.
+
+**Narrowed, not closed.** A registry error *during* pass 2 can still stop
+part-way. The registry has no transaction spanning several tags, so this is as
+far as the window closes; nobody should read this entry as a guarantee.
+
+**The stamp must stay a `matrix` job output.** The "immutable tag already
+exists" error advises "Re-run all jobs". That is only correct because
+re-running all jobs re-runs `matrix`, producing a fresh stamp, while
+"Re-run failed jobs" reuses its outputs and so the same stamp. A comment at
+the stamp now says so, because moving the stamp nearer to `fuse` looks like a
+simplification and would silently make the advice wrong.

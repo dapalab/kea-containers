@@ -23,6 +23,9 @@
 #   fuse    joins the per-arch digests into one manifest list per image and
 #           applies the tags. Until this runs, nothing is reachable by tag, so
 #           a half-finished run never leaves a partially updated tag behind.
+#           Every image is checked before any is tagged, so a failed check
+#           cannot leave the image set on mixed builds either - though a
+#           registry error mid-tagging still can (D27).
 name: build
 
 on:
@@ -169,6 +172,13 @@ jobs:
       #
       # A run that crosses midnight UTC therefore gets one date throughout,
       # rather than amd64 landing on one day and the tag on the next.
+      #
+      # It MUST stay a job output of this job. fuse's "immutable tag already
+      # exists" error advises 'Re-run all jobs', and that advice is only true
+      # because re-running all jobs re-runs this one (a fresh stamp) while
+      # 'Re-run failed jobs' reuses its outputs (the same stamp, so the tag
+      # collides). Moving the stamp nearer where it is used looks like a
+      # simplification and would silently make that advice wrong.
       - id: stamp
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
@@ -417,13 +427,26 @@ jobs:
             *) echo "::error::bad stamp derived from CREATED=$CREATED"; exit 1 ;;
           esac
           echo "immutable tag stamp: $STAMP"
+
+          # Two passes, so the image SET is as atomic as each image is.
+          # Pass 1 checks every (branch, image) and writes a plan; nothing is
+          # tagged. Pass 2 applies the plan. A missing digest or a colliding
+          # immutable tag on image 5 used to surface after images 1-4 were
+          # already retagged, leaving 3.0 on kea-dhcp4 a different Kea build
+          # from 3.0 on kea-dhcp6 - silently, since every image still pulls.
+          #
+          # This NARROWS the window, it does not close it: a registry error
+          # during pass 2 can still stop part-way, because the registry has
+          # no transaction spanning several tags. See D27.
+          plan=/tmp/fuse-plan
+          rm -rf "$plan"; mkdir -p "$plan"
           for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
             for img in $(./scripts/matrix.py images "$branch"); do
               refs=()
               for arch in amd64 arm64; do
                 f="/tmp/digests/digests-${branch}-${arch}/${img}"
                 if [ ! -f "$f" ]; then
-                  echo "::error::missing digest for kea-${img} ${branch}/${arch}"
+                  echo "::error::missing digest for kea-${img} ${branch}/${arch} - nothing tagged"
                   exit 1
                 fi
                 refs+=("${REGISTRY}/${OWNER}/kea-${img}@$(cat "$f")")
@@ -432,12 +455,6 @@ jobs:
               mapfile -t tags < <(./scripts/matrix.py tags "$branch" "$img" \
                                     --stamp "$STAMP" \
                                     --registry "$REGISTRY" --owner "$OWNER")
-              targs=()
-              for t in "${tags[@]}"; do targs+=(--tag "$t"); done
-
-              echo "::group::kea-${img} (${branch})"
-              printf '  tag: %s\n' "${tags[@]}"
-              printf '  arch: %s\n' "${refs[@]}"
 
               # The immutable tag must not already exist. The concurrency
               # group serialises runs on main and a build takes 17+ minutes,
@@ -450,17 +467,35 @@ jobs:
                 case "$t" in *-"$STAMP") immutable="$t" ;; esac
               done
               if [ -z "$immutable" ]; then
-                echo "::error::no immutable tag in the list for kea-${img}"
+                echo "::error::no immutable tag in the list for kea-${img} - nothing tagged"
                 exit 1
               fi
               if docker buildx imagetools inspect "$immutable" >/dev/null 2>&1; then
-                echo "::error::immutable tag already exists: ${immutable}"
+                echo "::error::immutable tag already exists: ${immutable} - nothing tagged"
                 echo "It is documented as never reused, so this run will not"
                 echo "overwrite it. If you re-ran only the failed jobs, the"
                 echo "stamp was carried over from the original attempt - use"
                 echo "'Re-run all jobs' instead, which stamps a fresh time."
                 exit 1
               fi
+
+              printf '%s\n' "${tags[@]}" > "$plan/${branch}-${img}.tags"
+              printf '%s\n' "${refs[@]}" > "$plan/${branch}-${img}.refs"
+              echo "${img}" >> "$plan/${branch}.images"
+            done
+          done
+          echo "pre-flight passed for $(cat "$plan"/*.images | wc -l) images"
+
+          for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
+            while read -r img; do
+              mapfile -t tags < "$plan/${branch}-${img}.tags"
+              mapfile -t refs < "$plan/${branch}-${img}.refs"
+              targs=()
+              for t in "${tags[@]}"; do targs+=(--tag "$t"); done
+
+              echo "::group::kea-${img} (${branch})"
+              printf '  tag: %s\n' "${tags[@]}"
+              printf '  arch: %s\n' "${refs[@]}"
 
               docker buildx imagetools create "${targs[@]}" "${refs[@]}"
 
@@ -476,7 +511,7 @@ jobs:
               echo "${REGISTRY}/${OWNER}/kea-${img}@${idx}" >> /tmp/sign-refs.txt
               echo "  index: ${idx}"
               echo "::endgroup::"
-            done
+            done < "$plan/${branch}.images"
           done
 
       - name: Verify published manifests are genuinely multi-arch
