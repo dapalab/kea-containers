@@ -5,14 +5,14 @@
 # Not affiliated with or endorsed by Internet Systems Consortium.
 #
 # Kea is built from the official ISC source tarball, whose detached PGP
-# signature is verified against a vendored copy of ISC's code-signing
-# keyblock. The keyring contains ONLY ISC's published keys, so a tarball
-# signed by anything else fails with "No public key" and the build stops.
-# The gate asserts a GOODSIG status token rather than trusting gpg's exit
-# code, which is 0 even for an expired or revoked signing key.
+# signature is checked against a copy of ISC's code-signing keys kept in this
+# repository. The keyring holds only ISC's published keys, so a tarball signed
+# by any other key fails with "No public key" and the build stops. The check
+# looks for gpg's GOODSIG status token rather than its exit code, which is 0
+# even when the signing key has expired or been revoked.
 #
-# One builder stage compiles Kea once per architecture; every runtime image
-# is carved out of that single install tree and shares one base layer.
+# One builder stage compiles Kea once per architecture. Every runtime image is
+# made from that one install tree, and they all share one base layer.
 
 ARG ALPINE_REF=alpine:3.24
 ARG KEA_VERSION
@@ -21,7 +21,7 @@ ARG REVISION
 ARG CREATED
 
 ###############################################################################
-# builder - compiles Kea once; its output feeds every image below
+# builder - compiles Kea once, for every image below
 ###############################################################################
 FROM ${ALPINE_REF} AS builder
 
@@ -40,25 +40,21 @@ COPY keys/isc-keyblock.asc /build/isc-keyblock.asc
 COPY verify-tarball.sh     /usr/local/bin/verify-tarball.sh
 COPY make-sbom.sh          /usr/local/bin/make-sbom.sh
 
-# Fetch and cryptographically verify the upstream tarball. Fails closed:
-# a bad signature, a missing signature, a signer outside ISC's keyblock, or a
-# signer whose key has expired or been revoked all abort the build.
+# Download the upstream tarball and check its signature. Anything wrong stops
+# the build: a bad or missing signature, a signer outside ISC's keyblock, or a
+# signing key that has expired or been revoked.
 #
-# The verification itself lives in verify-tarball.sh rather than inline here,
-# so that test/verify-signature-test.sh can drive the REAL script against
-# expired, revoked, untrusted and tampered fixtures. An inline heredoc cannot
-# be tested, and an untested security check is the thing this repo keeps
-# learning not to ship. See that script's header for why `gpg --verify`
-# alone is not enough.
+# The check itself lives in verify-tarball.sh rather than inline here, so that
+# test/verify-signature-test.sh can run the real script against expired,
+# revoked, untrusted and tampered fixtures. A check written inline can't be
+# tested. That script's header explains why `gpg --verify` alone isn't enough.
 #
-# There is deliberately NO separate SHA-256 assertion here. ISC publishes no
-# checksum files (re-confirmed 2026-09-20: .sha256, .sha512 and .SHA256 all
-# 404 for both 3.2.0 and 3.0.4), so any hash would be one we transcribed, and
-# a valid signature over these exact bytes is strictly stronger than matching
-# a hash fetched from the same server that served the tarball. This block
-# previously ended with a bare `sha256sum kea.tar.xz`, which printed a hash,
-# compared it to nothing, and could not fail - two checks to an auditor's eye
-# where there was one. See docs/DECISIONS.md D2.
+# There's deliberately no separate SHA-256 check. ISC doesn't publish checksum
+# files (checked again 2026-09-20: .sha256, .sha512 and .SHA256 all return 404
+# for 3.2.0 and 3.0.4), so any hash would be one we'd written down ourselves.
+# A valid signature over these exact bytes is stronger anyway. This step used
+# to end with a bare `sha256sum kea.tar.xz`, which printed a hash but compared
+# it with nothing, so we removed it. See docs/DECISIONS.md D2.
 RUN set -eux; \
     test -n "${KEA_VERSION}"; \
     base="https://downloads.isc.org/isc/kea/${KEA_VERSION}"; \
@@ -73,29 +69,28 @@ RUN set -eux; \
 
 WORKDIR /build/src
 
-# Every optional dependency is pinned explicitly. They default to 'auto' in
-# meson.options, which would silently enable a backend if a -dev package
-# happened to be present - making the image contents depend on the build
-# environment rather than on this file. Pinning means 'enabled' here is a
-# decision, and a missing dependency is a hard failure rather than a silent
-# downgrade to memfile-only.
+# Every optional feature is switched on or off explicitly. They default to
+# 'auto' in meson.options, which quietly turns a feature on if its -dev
+# package happens to be installed, so the image would depend on the build
+# environment rather than on this file. Setting them here makes 'enabled' a
+# decision, and a missing dependency fails the build instead of quietly
+# leaving the feature out.
 #
-# MySQL and PostgreSQL cost ~1 MB on the runtime image (mariadb-connector-c
-# plus libpq) and nothing at runtime if unused, so they are built in. NETCONF
-# and Kerberos stay off: both pull substantially more weight for features this
-# audience does not use.
+# MySQL and PostgreSQL add about 1 MB to the runtime image (mariadb-connector-c
+# and libpq) and cost nothing if unused, so they're built in. NETCONF and
+# Kerberos stay off: both add a lot more, for features few people here need.
 #
-# install_umask=0022 is REQUIRED for Kea 3.0 and harmless for 3.2.
+# install_umask=0022 is needed for Kea 3.0, and harmless for 3.2.
 #
 # Kea 3.0.x sets 'install_umask=0027' in its project() default_options, which
-# installs every library as 0750 root:root. Our daemons run as UID 10000 and
-# cannot read them, so kea-dhcp4 dies at startup with
+# installs every library as 0750 root:root. Our servers run as UID 10000 and
+# can't read them, so kea-dhcp4 stops at startup with
 # "Error loading shared library libkea-util.so.103: Permission denied".
-# ISC never hits this because their images run as root.
+# ISC's images don't hit this because they run as root.
 #
-# Kea 3.2 dropped the global umask in favour of explicit install_mode on the
-# state directories only, so it already installs 0755. Setting this explicitly
-# gives both branches identical, intentional permissions.
+# Kea 3.2 replaced the global umask with install_mode on its state directories,
+# so it already installs 0755. Setting it here gives both branches the same,
+# intended permissions. See D14.
 RUN set -eux; \
     meson setup build \
         --prefix=/usr \
@@ -118,25 +113,25 @@ RUN set -eux; \
     install -D -m 0644 AUTHORS /stage/usr/share/licenses/kea/AUTHORS
 
 ###############################################################################
-# db-clients - source stage for the two CLI tools kea-admin shells out to
+# db-clients - where the two command-line clients kea-admin uses come from
 #
-# kea-admin invokes `mysql` (30 call sites) and `psql` (5). Installing the full
-# mariadb-client package costs 65 MB, because it is seven near-identical ~5 MB
-# binaries (mariadb-dump, mariadb-check, mariadb-import, ...) that kea-admin
-# never calls. Copying just the two we need costs 8.8 MB, measured.
+# kea-admin calls `mysql` (in 30 places) and `psql` (in 5). The full
+# mariadb-client package is 65 MB, because it's seven similar ~5 MB tools
+# (mariadb-dump, mariadb-check, mariadb-import, ...) that kea-admin never uses.
+# Copying just the two it needs costs 8.8 MB.
 #
-# Their other dependencies - libcrypto, libssl, libstdc++, libz, libgcc - are
-# already present in runtime-base, so they add nothing.
+# Their other dependencies (libcrypto, libssl, libstdc++, libz, libgcc) are
+# already in runtime-base, so they add nothing.
 ###############################################################################
 FROM ${ALPINE_REF} AS db-clients
 # pipefail matters below: without it, a failing psql or apk in a pipeline
-# is masked by a successful sed, and the version guard silently passes.
+# would be hidden by a successful sed, and the version check would pass.
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]
-# Alpine carries postgresql16/17/18 concurrently and moves the recommended
-# default over time, so a hardcoded major WILL go stale. Pin it to match the
-# libpq that runtime-base installs, and assert the match rather than trusting
-# it: a psql that disagrees with the library the daemons link is a confusing
-# thing to hand someone who is already debugging a database problem.
+# Alpine carries postgresql16, 17 and 18 side by side and changes the
+# recommended one over time, so a hardcoded version would go stale. Match it
+# to the libpq that runtime-base installs, and check that they match: a psql
+# that disagrees with the library the servers use would be confusing for
+# someone already debugging a database problem.
 RUN set -eux; \
     apk add --no-cache mariadb-client postgresql18-client; \
     psql_major="$(psql --version | sed -nE 's/.* ([0-9]+)\..*/\1/p')"; \
@@ -148,15 +143,15 @@ RUN set -eux; \
 ###############################################################################
 # runtime-base - one shared layer behind every published image
 #
-# Carries the runtime shared libraries, the full libkea-*.so stack and the
-# open-source hook libraries. Because every image below starts FROM this exact
-# stage, the registry stores these layers once and a user pulling all five
-# downloads them once. No build tooling is present.
+# The runtime libraries, Kea's own libkea-*.so libraries and the open-source
+# hook libraries. Every image below starts FROM this stage, so the registry
+# stores these layers once, and pulling all five images downloads them once.
+# No build tools are included.
 ###############################################################################
 FROM ${ALPINE_REF} AS runtime-base
 
-# UID/GID are fixed and documented so bind-mounted lease directories can be
-# chowned ahead of time. Changing these is a breaking change for users.
+# The UID and GID are fixed and documented, so people can chown bind-mounted
+# lease directories ahead of time. Changing them would break existing setups.
 ARG KEA_UID=10000
 ARG KEA_GID=10000
 
@@ -165,13 +160,12 @@ ARG SOURCE_URL
 ARG REVISION
 ARG CREATED
 
-# org.opencontainers.image.source is what links a published GHCR package back
-# to this repository. Without it a package is unlinked, which affects both
-# discoverability and how registry permissions are inherited.
+# org.opencontainers.image.source links each published GHCR package back to
+# this repository. Without it, the package isn't linked, which affects both
+# how people find it and which permissions it inherits. See D15.
 #
-# The description and vendor deliberately state that these are unofficial
-# community builds, so the disclaimer travels with the image rather than living
-# only in a README someone may never read.
+# The description and vendor say these are unofficial community builds, so
+# that note travels with the image, not just the README.
 LABEL org.opencontainers.image.source="${SOURCE_URL}" \
       org.opencontainers.image.url="${SOURCE_URL}" \
       org.opencontainers.image.documentation="${SOURCE_URL}#readme" \
@@ -189,32 +183,34 @@ RUN set -eux; \
     adduser -S -u "${KEA_UID}" -G kea -H -s /sbin/nologin kea; \
     mkdir -p /etc/kea /var/lib/kea /run/kea; \
     chown kea:kea /var/lib/kea /run/kea; \
-    # Kea 3.x refuses to use a unix control socket whose directory is more
-    # permissive than 0750, and refuses a lease directory it does not trust.
-    # A default 0755 from mkdir is rejected at config-parse time.
+    # Kea 3.x won't use a Unix control socket whose directory is more open
+    # than 0750, and is just as strict about the lease directory. mkdir's
+    # default of 0755 is rejected when the config is read.
     chmod 0750 /run/kea /var/lib/kea
 
-# Shared Kea libraries + hook libraries, and the licence texts we are obliged
-# to redistribute with the binaries (Kea is MPL-2.0).
+# Kea's libraries and hook libraries, plus the licence files that go with the
+# binaries (Kea is MPL-2.0).
 COPY --from=builder /stage/usr/lib/ /usr/lib/
 COPY --from=builder /stage/usr/share/licenses/kea/ /usr/share/licenses/kea/
-# Kea is compiled from source, so buildx's SBOM scanner - which catalogues
-# the package manager's view - cannot see it. This document is what puts Kea
-# in the published SBOM attestation. See build/make-sbom.sh and D23.
+# Kea is compiled from source, so buildx's SBOM scanner, which lists what the
+# package manager installed, can't see it. This document is what puts Kea in
+# the published SBOM. See build/make-sbom.sh and D23.
 COPY --from=builder /stage/usr/share/sbom/ /usr/share/sbom/
 
 ###############################################################################
 # kea-dhcp4
 #
-# kea-lfc is included because memfile leases require it: kea-dhcp4 execs it
-# to compact the lease CSV. Without it, lease file cleanup silently fails.
+# kea-lfc is included because memfile leases need it: kea-dhcp4 runs it to
+# tidy up the lease file. If it's missing, kea-dhcp4 won't start; if it's
+# present but broken, Kea doesn't notice, which is why smoke gate 6 checks
+# that the lease file really is compacted (D22).
 #
-# CAP_NET_RAW        raw/packet socket for the DHCPv4 broadcast path
-# CAP_NET_BIND_SERVICE   bind UDP/67
+# CAP_NET_RAW            a raw socket, to hear DHCPv4 broadcasts
+# CAP_NET_BIND_SERVICE   binding UDP port 67
 #
-# File capabilities are set on the binary so the daemon can run as a non-root
-# user and still acquire them. Docker's default bounding set includes both; if
-# you run with --cap-drop=ALL you must add them back explicitly.
+# The capabilities are set on the binary itself, so the server can run as a
+# non-root user and still use them. Both are in Docker's default set; with
+# --cap-drop=ALL, add them back explicitly.
 ###############################################################################
 FROM runtime-base AS dhcp4
 LABEL org.opencontainers.image.title="kea-dhcp4"
@@ -237,7 +233,7 @@ VOLUME ["/etc/kea", "/var/lib/kea"]
 CMD ["/usr/sbin/kea-dhcp4", "-c", "/etc/kea/kea-dhcp4.conf"]
 
 ###############################################################################
-# kea-dhcp6 - CAP_NET_BIND_SERVICE only; DHCPv6 is UDP multicast, not raw
+# kea-dhcp6 - CAP_NET_BIND_SERVICE only, since DHCPv6 uses UDP multicast
 ###############################################################################
 FROM runtime-base AS dhcp6
 LABEL org.opencontainers.image.title="kea-dhcp6"
@@ -259,7 +255,7 @@ VOLUME ["/etc/kea", "/var/lib/kea"]
 CMD ["/usr/sbin/kea-dhcp6", "-c", "/etc/kea/kea-dhcp6.conf"]
 
 ###############################################################################
-# kea-dhcp-ddns - needs no capabilities at all; ports 53001 and 8000 are >1024
+# kea-dhcp-ddns - no capabilities needed; ports 53001 and 8000 are above 1024
 ###############################################################################
 FROM runtime-base AS dhcp-ddns
 LABEL org.opencontainers.image.title="kea-dhcp-ddns"
@@ -276,29 +272,29 @@ VOLUME ["/etc/kea"]
 CMD ["/usr/sbin/kea-dhcp-ddns", "-c", "/etc/kea/kea-dhcp-ddns.conf"]
 
 ###############################################################################
-# kea-ctrl-agent  (Kea 3.0 ONLY)
+# kea-ctrl-agent  (Kea 3.0 only)
 #
-# Removed upstream in 3.2, once the daemons gained native HTTP/TLS control
-# sockets. versions.json carries a per-branch image list precisely so this
-# stage is only ever built for 3.0; building it against 3.2 sources will fail
-# at the COPY below, which is the correct and loud outcome.
+# Kea 3.2 removed the agent, because the servers now have their own HTTP/TLS
+# control sockets. versions.json lists images per branch so that this stage is
+# only built for 3.0. Built against 3.2, it fails at the COPY below, which is
+# the clear failure we'd want.
 #
-# Needs no capabilities: port 8000 is above 1024.
+# No capabilities needed: port 8000 is above 1024.
 #
-# It must share /run/kea with the daemons it proxies, so /run/kea is left as a
-# declared volume rather than a private directory.
+# It shares /run/kea with the servers it talks to, so /run/kea is a declared
+# volume rather than a private directory.
 ###############################################################################
 FROM runtime-base AS ctrl-agent
 LABEL org.opencontainers.image.title="kea-ctrl-agent"
 COPY --from=builder /stage/usr/sbin/kea-ctrl-agent /usr/sbin/kea-ctrl-agent
 COPY config/kea-ctrl-agent.conf /etc/kea/kea-ctrl-agent.conf
 
-# The agent speaks HTTP, not a unix socket, so the probe has to be a real HTTP
-# request - piping bare JSON at it does not work.
+# The agent speaks HTTP rather than a Unix socket, so the check has to be a
+# real HTTP request; sending it bare JSON doesn't work.
 #
-# Success is any HTTP status line. That is deliberate: a 401 from an agent with
-# authentication enabled still proves the server is alive and answering, and
-# the healthcheck has no business holding credentials.
+# Any HTTP status line counts as healthy, on purpose: a 401 from an agent with
+# authentication turned on still shows it's up and answering, and the
+# healthcheck shouldn't need credentials.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD ["sh", "-c", "b='{\"command\":\"version-get\"}'; printf 'POST / HTTP/1.0\\r\\nContent-Type: application/json\\r\\nContent-Length: %d\\r\\n\\r\\n%s' ${#b} \"$b\" | nc -w3 127.0.0.1 8000 | grep -q '^HTTP/'"]
 USER 10000:10000
@@ -307,24 +303,24 @@ VOLUME ["/etc/kea", "/run/kea"]
 CMD ["/usr/sbin/kea-ctrl-agent", "-c", "/etc/kea/kea-ctrl-agent.conf"]
 
 ###############################################################################
-# kea-tools - perfdhcp, kea-shell, kea-admin, keactrl
+# kea-tools - kea-admin, perfdhcp, keactrl, kea-lfc
 #
-# Not a daemon. Exists so users have the administrative tooling ISC's images
-# omit (their issue #46: schema updates impossible, kea-admin missing), and so
-# CI has a first-class way to drive the perfdhcp functional test.
+# Not a server. It gives people the admin tools ISC's images leave out (their
+# issue #46: "database schema update impossible because kea-admin missing"),
+# and gives CI a proper way to run the perfdhcp functional test.
 #
-# kea-admin ships WITH the mysql and psql clients it shells out to, and with
-# the schema SQL. A tool that is present but cannot perform its own primary
-# function is worse than an absent one - it is a trap for whoever finds it.
+# kea-admin comes with the mysql and psql clients it calls, and with the
+# schema SQL, so it can actually do its job.
 #
-# kea-shell is deliberately NOT included. It is a standalone Python client for
-# the control API and nothing depends on it: HA runs inside the daemons via
-# libdhcp_ha.so with peers talking HTTP directly, and DDNS is the daemons
-# sending NCRs to kea-dhcp-ddns over UDP. Shipping it would drag python3 into
-# the image and roughly double its size. The control API is reachable with the
-# netcat already present in every image - see README.
+# kea-shell is left out on purpose. It's a standalone Python client for the
+# control API, and nothing depends on it: HA runs inside the servers via
+# libdhcp_ha.so, and DDNS requests go from the servers to kea-dhcp-ddns over
+# UDP. Including it would bring in python3 and roughly double the image size,
+# and the netcat in every image reaches the same API. See
+# docs/configuration.md.
 #
-# perfdhcp gets CAP_NET_RAW so it can craft DHCPv4 packets as a non-root user.
+# perfdhcp gets CAP_NET_RAW so it can send DHCPv4 test packets as a non-root
+# user.
 ###############################################################################
 FROM runtime-base AS tools
 LABEL org.opencontainers.image.title="kea-tools"
@@ -332,14 +328,14 @@ COPY --from=builder /stage/usr/sbin/perfdhcp   /usr/sbin/perfdhcp
 COPY --from=builder /stage/usr/sbin/kea-lfc    /usr/sbin/kea-lfc
 COPY --from=builder /stage/usr/sbin/kea-admin  /usr/sbin/kea-admin
 COPY --from=builder /stage/usr/sbin/keactrl    /usr/sbin/keactrl
-# Schema creation and upgrade scripts for the DB backends. Small, plain SQL,
-# and the thing people actually need when standing up a MySQL/PostgreSQL
-# lease database. See the note above about the CLI clients.
+# Schema creation and upgrade scripts for the database backends: small plain
+# SQL files, and what people need when setting up a MySQL or PostgreSQL lease
+# database.
 COPY --from=builder /stage/usr/share/kea/scripts/ /usr/share/kea/scripts/
 
-# The CLI clients kea-admin needs to be a working tool rather than a trap.
-# `mysql` is MariaDB's compatibility name for the same binary; it prints a
-# deprecation notice on stderr only, so kea-admin's stdout parsing is unaffected.
+# The command-line clients kea-admin needs. `mysql` is MariaDB's
+# compatibility name for the same binary; it prints a deprecation notice on
+# stderr only, so kea-admin's parsing of stdout isn't affected.
 RUN apk add --no-cache libncursesw readline
 COPY --from=db-clients /usr/bin/mariadb /usr/bin/mariadb
 COPY --from=db-clients /usr/bin/psql    /usr/bin/psql

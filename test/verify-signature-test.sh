@@ -3,20 +3,18 @@
 #
 # Negative-control tests for build/verify-tarball.sh.
 #
-# WHY THIS EXISTS
-#     The repo's recurring lesson is "an assertion that could not fail". The
-#     signature gate was exactly that: `gpg --batch --verify` exits 0 for a
-#     signature made by an expired or revoked key, so the build's fail-closed
-#     claim held only for the cases it happened to consider.
+# Why this exists
+#     The signature check used to rely on `gpg --batch --verify`, which exits
+#     0 for a signature made by an expired or revoked key. So it only
+#     rejected the cases it happened to consider (D2).
 #
-#     A fix to a check that has never failed for the right reason is just a
-#     different unproven assertion. So each case below drives a fixture that
-#     SHOULD be rejected through the real script and fails the test if it is
-#     accepted - plus one case that should be accepted, so we know the
-#     harness is not simply rejecting everything.
+#     A fixed check still needs to be seen failing for the right reason. So
+#     each case below runs a fixture that should be rejected through the real
+#     script, and fails the test if it's accepted. One case should be
+#     accepted, to show the script isn't simply rejecting everything.
 #
-# Runs in seconds and needs only gpg, so it lives in the lint job rather than
-# behind a Kea compile.
+# It runs in seconds and only needs gpg, so it's in the lint job rather than
+# after a Kea compile.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +27,7 @@ pass() { printf '  \033[32mPASS\033[0m  %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; exit 1; }
 info() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-# Each fixture gets its own GNUPGHOME so state cannot leak between cases.
+# Each fixture gets its own GNUPGHOME, so nothing carries over between cases.
 new_home() {
   local h="$WORK/$1"; rm -rf "$h"; mkdir -p "$h"; chmod 700 "$h"; printf '%s' "$h"
 }
@@ -78,8 +76,8 @@ PAST=1704110400   # 2024-01-01, so a 30-day key is long dead by now
 ###############################################################################
 info "Case 1 (positive control): key in the keyblock, valid signature"
 ###############################################################################
-# Without this, every other case could pass because the script rejects
-# everything unconditionally.
+# Without this, every other case could pass just because the script rejects
+# everything.
 H=$(new_home good); gen "$H" "Good Signer <good@example.invalid>" never >/dev/null
 sign "$H" "$WORK/kea.tar.xz" "$WORK/good.asc"
 export_key "$H" "$WORK/good.keyblock"
@@ -98,9 +96,9 @@ expect_reject "signature from an expired key" \
 ###############################################################################
 info "Case 3: REVOKED signing key (gpg --verify exits 0 and says 'Good')"
 ###############################################################################
-# GnuPG >= 2.1 writes a revocation certificate at key-generation time, with
-# its armor header disarmed by a leading ':' so it cannot be imported by
-# accident. Stripping that is the only batch-mode way to revoke a key.
+# GnuPG 2.1+ writes a revocation certificate when it creates a key, with a
+# ':' at the start of its header so it can't be imported by accident.
+# Removing that is the only way to revoke a key in batch mode.
 H=$(new_home rev); FPR=$(gen "$H" "Revoked Signer <rev@example.invalid>" never)
 sign "$H" "$WORK/kea.tar.xz" "$WORK/rev.asc"
 sed 's/^://' "$H/openpgp-revocs.d/$FPR.rev" > "$WORK/revoke.asc"
@@ -112,8 +110,8 @@ expect_reject "signature from a revoked key" \
 ###############################################################################
 info "Case 4: signer NOT in the keyblock"
 ###############################################################################
-# This is the case the original build already handled (NO_PUBKEY, exit 2).
-# Kept so a refactor cannot regress it silently.
+# The original build already handled this case (NO_PUBKEY, exit 2). It's
+# kept so a later change can't quietly break it.
 H=$(new_home out); gen "$H" "Outsider <out@example.invalid>" never >/dev/null
 sign "$H" "$WORK/kea.tar.xz" "$WORK/out.asc"
 expect_reject "signature by a key outside the keyblock" \
@@ -130,8 +128,8 @@ expect_reject "tampered payload against a good signature" \
 ###############################################################################
 info "Case 6: the vendored ISC keyblock imports and holds usable keys"
 ###############################################################################
-# Guards against a truncated or mangled re-vendoring. Does not verify a real
-# tarball: that happens in the build, against the real signature.
+# Catches a truncated or damaged keyblock after an update. It doesn't check a
+# real tarball; the build does that, against the real signature.
 H=$(new_home isc)
 GNUPGHOME="$H" gpg --batch --quiet --no-auto-check-trustdb \
   --import "$HERE/../build/keys/isc-keyblock.asc" 2>/dev/null
@@ -143,12 +141,11 @@ pass "vendored ISC keyblock imports cleanly ($n keys)"
 info "Case 7: the weekly keyblock warning actually fires"
 ###############################################################################
 # scripts/check-upstream.py warns about revoked or expiring ISC signing keys.
-# None of the seven real keys carries an expiry date, so on the real keyblock
-# that check can only ever report "healthy" - exactly the shape of assertion
-# this repo has been caught by before. Drive it with fixtures instead.
+# None of the seven real keys has an expiry date, so on the real keyblock
+# that check could only ever say "healthy". So test it with fixtures instead.
 WATCHER="$HERE/../scripts/check-upstream.py"
 
-# 7a: a healthy block must be reported healthy (or 7b proves nothing).
+# 7a: a healthy block is reported as healthy (otherwise 7b proves nothing).
 H=$(new_home kbok); gen "$H" "Healthy Key <ok@example.invalid>" never >/dev/null
 export_key "$H" "$WORK/healthy.keyblock"
 if ! "$WATCHER" --check-keyblock "$WORK/healthy.keyblock" >"$WORK/kb.log" 2>&1; then
@@ -157,7 +154,7 @@ if ! "$WATCHER" --check-keyblock "$WORK/healthy.keyblock" >"$WORK/kb.log" 2>&1; 
 fi
 pass "healthy keyblock -- reported healthy"
 
-# 7b: a revoked key must be reported, with exit 3.
+# 7b: a revoked key is reported, with exit 3.
 H=$(new_home kbrev); FPR=$(gen "$H" "Revoked Key <kbrev@example.invalid>" never)
 sed 's/^://' "$H/openpgp-revocs.d/$FPR.rev" > "$WORK/kbrevoke.asc"
 GNUPGHOME="$H" gpg --batch --quiet --no-auto-check-trustdb --import "$WORK/kbrevoke.asc" 2>/dev/null
@@ -173,7 +170,7 @@ fi
 grep -q 'REVOKED' "$WORK/kb.log" || fail "revoked key -- exit 3 but no REVOKED in the report"
 pass "revoked key in keyblock -- reported, exit 3"
 
-# 7c: a key inside the 90-day expiry window must be reported.
+# 7c: a key within 90 days of expiring is reported.
 H=$(new_home kbexp); gen "$H" "Expiring Key <kbexp@example.invalid>" 30d >/dev/null
 export_key "$H" "$WORK/expiring.keyblock"
 set +e
@@ -187,7 +184,7 @@ fi
 grep -q 'EXPIRES in' "$WORK/kb.log" || fail "expiring key -- exit 3 but no EXPIRES in the report"
 pass "key expiring inside the 90-day window -- reported, exit 3"
 
-# 7d: an unreadable keyblock is a BROKEN CHECK (exit 1), never "healthy".
+# 7d: an unreadable keyblock is a broken check (exit 1), never "healthy".
 set +e
 "$WATCHER" --check-keyblock "$WORK/does-not-exist.asc" >"$WORK/kb.log" 2>&1
 code=$?

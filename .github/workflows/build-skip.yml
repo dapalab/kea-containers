@@ -1,21 +1,22 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Companion to build.yml, and the answer to a deadlock that is easy to create
-# and confusing to diagnose.
+# A companion to build.yml, which prevents a deadlock that's easy to create
+# and confusing to track down.
 #
-# build.yml has paths-ignore so documentation changes do not trigger a
-# 25-minute four-job rebuild. Branch protection requires a check named
-# 'required', which build.yml provides.
+# build.yml uses paths-ignore, so documentation changes don't trigger a
+# 25-minute rebuild. Branch protection requires a check named 'required',
+# which build.yml provides.
 #
-# Those two facts collide: a pull request touching ONLY ignored paths never
-# triggers build.yml, so 'required' never reports, so branch protection blocks
-# the PR forever. A human can bypass it; Renovate cannot - and because
+# Together, those mean a pull request that only touches ignored paths never
+# runs build.yml, so 'required' never reports, and branch protection blocks
+# the PR forever. A person can override that; Renovate can't. And because
 # renovate.yml and upstream-watch.yml are themselves ignored paths, a Renovate
-# PR bumping an action SHA in one of them would hang on automerge indefinitely.
+# PR updating an action in one of them would wait on automerge forever.
 #
-# This workflow has the EXACT INVERSE path filter and supplies a passing
-# 'required' check for precisely the cases build.yml skips. The two filters
-# must be kept in sync; if you add a path to one, add it to the other.
+# This workflow has the exact opposite path filter, and provides a passing
+# 'required' check for exactly the cases build.yml skips. Keep the two filters
+# in sync: if you add a path to one, add it to the other.
+# (scripts/check-workflow-paths.py checks this in CI.)
 name: build
 
 on:

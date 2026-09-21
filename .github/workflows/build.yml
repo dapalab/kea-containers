@@ -2,39 +2,37 @@
 #
 # Build, test and publish the Kea images.
 #
-# Shape of this workflow, and why:
+# How it fits together:
 #
-#   matrix  reads versions.json and emits one job per (branch, arch). NOT per
-#           (branch, image, arch) - every image in a branch comes out of one
-#           builder stage, so fanning out per image would recompile Kea for
-#           each one.
+#   matrix  reads versions.json and makes one job per (branch, arch), not per
+#           (branch, image, arch). Every image in a branch comes out of one
+#           builder stage, so a job per image would recompile Kea each time.
 #
-#   build   runs natively on the target architecture. No QEMU: Kea is a large
-#           C++ codebase and an emulated aarch64 compile is slow enough to risk
-#           the job timeout. Tests run BEFORE anything is pushed, and images are
-#           pushed by digest only - no tags yet.
+#   build   runs natively on each architecture, without QEMU: Kea is a large
+#           C++ codebase, and an emulated aarch64 compile would be slow enough
+#           to risk the job timeout. Tests run before anything is pushed, and
+#           images are pushed by digest only, with no tags yet.
 #
-#           Testing and pushing are two separate buildx invocations, so "we
-#           tested it before we pushed it" does not by itself mean "we pushed
-#           what we tested". The push step therefore ASSERTS that the image
-#           manifest it published is the one the gates ran against, and fails
-#           if it is not.
+#           Testing and pushing are two separate buildx runs, so "tested
+#           before pushing" doesn't automatically mean "pushed what we
+#           tested". So the push step checks that the image it published is
+#           the one the tests ran against, and fails if not (D21).
 #
-#   fuse    joins the per-arch digests into one manifest list per image and
-#           applies the tags. Until this runs, nothing is reachable by tag, so
-#           a half-finished run never leaves a partially updated tag behind.
-#           Every image is checked before any is tagged, so a failed check
-#           cannot leave the image set on mixed builds either - though a
-#           registry error mid-tagging still can (D27).
+#   fuse    combines the per-arch digests into one multi-arch image each and
+#           applies the tags. Nothing is reachable by tag until this runs, so
+#           a run that stops half-way can't leave a tag half-updated. Every
+#           image is checked before any is tagged, so a failed check can't
+#           leave the images on different builds either (though a registry
+#           error part-way through tagging still could; see D27).
 name: build
 
 on:
   push:
     branches: [main]
-    # Documentation-only changes cannot alter an image, and a full rebuild is
-    # ~25 minutes across four jobs. Everything that CAN affect an image -
-    # build/, versions.json, scripts/, test/, the workflows themselves - is
-    # deliberately absent from this list.
+    # Documentation-only changes can't affect an image, and a full rebuild
+    # takes about 25 minutes across four jobs. Everything that can affect an
+    # image (build/, versions.json, scripts/, test/, this workflow) is left
+    # out of this list on purpose.
     paths-ignore:
       - 'docs/**'
       - 'examples/**'
@@ -42,18 +40,18 @@ on:
       - 'NOTICE'
       - 'LICENSE'
       - 'renovate.json5'
-      # These two workflows cannot affect an image. build.yml is deliberately
-      # NOT listed - a change to it must rebuild.
+      # These workflows can't affect an image. build.yml isn't listed, on
+      # purpose: a change to it should rebuild.
       - '.github/workflows/renovate.yml'
       - '.github/workflows/upstream-watch.yml'
       - '.github/workflows/scan.yml'
       - '.github/workflows/build-skip.yml'
   pull_request:
-    # Same filter as the push trigger, so a documentation PR does not
-    # run the four-job matrix for nothing. build-skip.yml carries the
-    # exact inverse filter and supplies the 'required' check branch
-    # protection needs, so skipping here cannot strand a PR.
-    # scripts/check-workflow-paths.py asserts the lists stay in sync.
+    # The same filter as the push trigger, so a documentation PR doesn't run
+    # the whole build. build-skip.yml has the exact opposite filter and
+    # provides the 'required' check that branch protection needs, so
+    # skipping here never leaves a PR stuck.
+    # scripts/check-workflow-paths.py checks that the two lists stay in sync.
     paths-ignore:
       - 'docs/**'
       - 'examples/**'
@@ -66,7 +64,7 @@ on:
       - '.github/workflows/scan.yml'
       - '.github/workflows/build-skip.yml'
   schedule:
-    # Weekly rebuild so Alpine security fixes land without a Kea release.
+    # A weekly rebuild, so Alpine security fixes arrive between Kea releases.
     - cron: '17 4 * * 1'
   workflow_dispatch:
 
@@ -87,18 +85,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # gc-packages.py is a manual tool, so nothing else in CI would notice
-      # it rotting. A compile check is cheap insurance.
+      # gc-packages.py is run by hand, so nothing else in CI would notice if
+      # it stopped compiling. This is a cheap check.
       - name: Byte-compile helper scripts
         run: python3 -m py_compile scripts/*.py
 
       - name: Validate versions.json
         run: ./scripts/matrix.py check
 
-      # DL3018 (pin apk versions) is ignored deliberately. Pinning package
-      # versions would defeat the weekly rebuild, whose whole purpose is to
-      # pick up Alpine security fixes without a Kea release. The base image is
-      # digest-pinned, which is where reproducibility is anchored instead.
+      # DL3018 (pin apk versions) is ignored on purpose. Pinning package
+      # versions would stop the weekly rebuild picking up Alpine security
+      # fixes, which is its whole point. The base image is pinned by digest
+      # instead, and that's what keeps builds reproducible.
       - name: hadolint
         run: |
           docker run --rm -i hadolint/hadolint:latest-alpine \
@@ -115,38 +113,36 @@ jobs:
             build/verify-tarball.sh build/make-sbom.sh test/make-sbom-test.sh \
             test/scan-report-test.sh
 
-      # The source-tarball signature gate, driven against expired, revoked,
-      # untrusted and tampered fixtures. It needs only gpg, so it belongs here
-      # rather than behind a 25-minute Kea compile - and a security check that
-      # has never failed for the right reason is not a check.
+      # The source signature check, run against expired, revoked, untrusted
+      # and tampered fixtures to make sure it rejects each one. It only needs
+      # gpg, so it runs here rather than after a 25-minute Kea compile.
       - name: Signature gate negative controls
         run: ./test/verify-signature-test.sh
 
-      # The SBOM document generator. A malformed document is skipped silently
-      # by buildx's scanner, which would put Kea back to being absent from
-      # the published SBOM with a green build.
+      # The SBOM document generator. buildx's scanner silently skips a
+      # malformed document, which would drop Kea from the published SBOM
+      # while the build stayed green.
       - name: SBOM document generator tests
         run: ./test/make-sbom-test.sh
 
-      # The scan reporter. Its important behaviour is telling "ran and found
-      # nothing" apart from "errored and produced nothing" - if those ever
-      # collapse into the same exit code, the scan goes quiet and that reads
-      # as good news.
+      # The scan reporter. Its most important job is telling "ran and found
+      # nothing" apart from "failed and produced nothing". If those ever looked
+      # the same, a broken scan would go quiet, and quiet looks like good news.
       - name: Scan reporter tests
         run: ./test/scan-report-test.sh
 
-      # The package collector is run by hand and deletes published images,
-      # so it is the last script that should be proven only by its first
-      # real run. Fakes the registry and gh; no network, no token.
+      # The package collector deletes published images and is run by hand,
+      # so it needs testing before its next real run, not by it. The tests
+      # fake the registry and gh: no network, no token.
       - name: Package collector tests
         run: ./test/gc-packages-test.py
 
       - name: Validate shipped config templates
         run: ./scripts/validate-configs.py
 
-      # Drift between build.yml's path filters and build-skip.yml's does not
-      # fail a build - it strands pull requests, because neither workflow
-      # triggers and the 'required' check never reports. Catch it here instead.
+      # If build.yml's path filters and build-skip.yml's drift apart, nothing
+      # fails. Instead, pull requests get stuck, because neither workflow runs
+      # and the 'required' check never reports. This catches it early.
       - name: Check workflow path filters are in sync
         run: ./scripts/check-workflow-paths.py
 
@@ -161,24 +157,24 @@ jobs:
       - id: gen
         run: echo "matrix=$(./scripts/matrix.py matrix)" >> "$GITHUB_OUTPUT"
 
-      # ONE timestamp for the whole run, stamped here because this job runs
-      # before every other. It does two jobs:
+      # One timestamp for the whole run, made here because this job runs
+      # before all the others. It's used for two things:
       #
-      #   1. org.opencontainers.image.created, identical in the test build and
-      #      the push build (D21) AND identical across amd64 and arm64, which
-      #      it was not when each build job stamped its own.
-      #   2. the immutable date-suffixed tag applied in fuse (D10), so the tag
-      #      and the label agree by construction rather than by coincidence.
+      #   1. the org.opencontainers.image.created label, which is then the same
+      #      in the test build and the push build (D21), and the same for amd64
+      #      and arm64 (it wasn't when each build job made its own).
+      #   2. the stamped tag fuse applies (D10), so the tag and the label
+      #      always agree.
       #
-      # A run that crosses midnight UTC therefore gets one date throughout,
-      # rather than amd64 landing on one day and the tag on the next.
+      # So a run that crosses midnight UTC uses one date throughout, rather
+      # than amd64 getting one day and the tag the next.
       #
-      # It MUST stay a job output of this job. fuse's "immutable tag already
-      # exists" error advises 'Re-run all jobs', and that advice is only true
-      # because re-running all jobs re-runs this one (a fresh stamp) while
-      # 'Re-run failed jobs' reuses its outputs (the same stamp, so the tag
-      # collides). Moving the stamp nearer where it is used looks like a
-      # simplification and would silently make that advice wrong.
+      # Keep it as an output of this job. fuse's "immutable tag already exists"
+      # error suggests 'Re-run all jobs', and that advice only works because
+      # re-running all jobs re-runs this one (a fresh stamp), while 'Re-run
+      # failed jobs' reuses its outputs (the same stamp, so the tag collides).
+      # Moving the stamp closer to where it's used looks like a tidy-up, but
+      # would quietly make that advice wrong.
       - id: stamp
         run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
@@ -207,8 +203,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Build every image for this branch locally first. The builder stage
-      # compiles Kea once; the per-image targets come out of that same cache,
-      # which is why this is one job rather than one per image.
+      # compiles Kea once and each image comes out of that same cache, which
+      # is why this is one job rather than one per image.
       - name: Build images for testing
         env:
           IMAGES: ${{ matrix.images }}
@@ -238,9 +234,9 @@ jobs:
               --metadata-file "/tmp/meta-test-${img}.json" \
               --load -t "kea-$img:test" \
               -f build/Dockerfile build/
-            # For a --load build this is the OCI IMAGE MANIFEST digest, which
-            # is what the push step's index wraps. Recorded so the push can
-            # prove it published these exact bytes.
+            # For a --load build, this is the image manifest digest, which is
+            # what the push step's index will contain. Saved so the push can
+            # check it published these exact bytes.
             tested="$(jq -r '."containerimage.digest"' "/tmp/meta-test-${img}.json")"
             test -n "$tested" && test "$tested" != "null"
             echo "$tested" > "/tmp/tested/${img}"
@@ -263,8 +259,8 @@ jobs:
           EXPECT_VERSION: ${{ matrix.kea }}
         run: ./test/smoke.sh
 
-      # Only now, with tests green, push. By digest and with no tag: the
-      # fuse job applies tags once BOTH architectures have succeeded.
+      # Only now, with the tests passed, push: by digest, with no tag. The
+      # fuse job adds tags once both architectures have succeeded.
       - name: Push by digest
         if: github.event_name != 'pull_request'
         env:
@@ -300,18 +296,17 @@ jobs:
             echo "$digest" > "/tmp/digests/${img}"
             echo "kea-${img} ${ARCH} -> ${digest}"
 
-            # Prove we published the bytes we tested.
+            # Check we published the bytes we tested.
             #
-            # These two digests are NOT the same kind of thing, which is the
-            # trap. A registry push wraps the image manifest in an INDEX
-            # alongside the provenance/SBOM attestation manifests (which
-            # carry platform "unknown/unknown"), so $digest above is an index
-            # digest and can never equal the --load build's digest. Verified
-            # empirically against a local registry: the index digest differs
-            # with and without attestations, while the child image manifest
-            # is identical to the tested one in both cases.
+            # These two digests aren't the same kind of thing, which is easy
+            # to miss. A registry push wraps the image in an index, alongside
+            # the provenance and SBOM attestations (platform "unknown/unknown"),
+            # so $digest above is an index digest and never equals the --load
+            # build's digest. Tested against a local registry: the index digest
+            # changes with and without attestations, while the image inside it
+            # matches the tested one either way.
             #
-            # So compare like with like: the index's own image manifest.
+            # So compare like with like: the image inside the index.
             raw="$(docker buildx imagetools inspect --raw \
                      "${REGISTRY}/${OWNER}/kea-${img}@${digest}")"
             if echo "$raw" | jq -e 'has("manifests")' >/dev/null; then
@@ -345,17 +340,18 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------
-  # A single, STABLY NAMED check for branch protection to require.
+  # One check with a name that never changes, for branch protection to
+  # require.
   #
-  # The build jobs are a matrix, so their names embed the Kea version and the
-  # Alpine digest: "build (3.2, 3.2.0, alpine:3.24@sha256:294b68...)". Those
-  # names change whenever versions.json changes - which is exactly what
-  # Renovate does. Requiring them directly would leave branch protection
-  # waiting forever for a check that will never report under its old name,
-  # blocking the very updates this automation exists to deliver.
+  # The build jobs are a matrix, so their names include the Kea version and
+  # the Alpine digest: "build (3.2, 3.2.0, alpine:3.24@sha256:294b68...)".
+  # Those names change whenever versions.json does, which is exactly what
+  # Renovate changes. Requiring them directly would leave branch protection
+  # waiting forever for a check under its old name, blocking the very
+  # updates the automation is there to deliver.
   #
-  # Requiring only this job avoids that. Its name never changes, and it fails
-  # if any job it depends on failed, was cancelled, or was skipped.
+  # Requiring only this job avoids that. Its name stays the same, and it fails
+  # if any job it depends on failed, was cancelled or was skipped (D20).
   required:
     name: required
     needs: [lint, matrix, build]
@@ -385,8 +381,8 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # Required for keyless cosign signing: the workflow's OIDC identity is
-      # what the signature is bound to, so there is no key to store or rotate.
+      # Needed for keyless cosign signing: each signature is tied to this
+      # workflow's OIDC identity, so there's no key to store or rotate.
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -411,13 +407,13 @@ jobs:
           CREATED: ${{ needs.matrix.outputs.created }}
         run: |
           set -euo pipefail
-          # The immutable tag comes from the SAME stamp as the images'
-          # created label, so 3.2.0-20260920-2203 always names a build
-          # labelled 2026-09-20T22:03Z. Deriving it here with a fresh `date`
-          # would let the two disagree on a run that crosses midnight UTC.
+          # The stamped tag comes from the same timestamp as the images'
+          # created label, so 3.2.0-20260920-2244 always names a build
+          # labelled 2026-09-20T22:44Z. Taking a fresh `date` here could let
+          # the two disagree on a run that crosses midnight UTC.
           #
-          # Minute resolution, not day: images rebuild on every automerged
-          # Renovate PR as well as weekly, and four builds ran on
+          # To the minute, not just the day: images rebuild whenever a
+          # Renovate update merges as well as weekly, and four builds ran on
           # 2026-09-20 alone. See docs/DECISIONS.md D10.
           test -n "$CREATED"
           STAMP="$(printf '%s' "$CREATED" \
@@ -428,16 +424,16 @@ jobs:
           esac
           echo "immutable tag stamp: $STAMP"
 
-          # Two passes, so the image SET is as atomic as each image is.
-          # Pass 1 checks every (branch, image) and writes a plan; nothing is
-          # tagged. Pass 2 applies the plan. A missing digest or a colliding
-          # immutable tag on image 5 used to surface after images 1-4 were
-          # already retagged, leaving 3.0 on kea-dhcp4 a different Kea build
-          # from 3.0 on kea-dhcp6 - silently, since every image still pulls.
+          # Two passes, so the set of images is updated together, like each
+          # image is. Pass 1 checks every (branch, image) and writes a plan,
+          # without tagging anything. Pass 2 applies the plan. Before this, a
+          # missing digest or a clashing stamped tag on image 5 showed up after
+          # images 1-4 were already retagged, leaving kea-dhcp4:3.0 on a
+          # different build from kea-dhcp6:3.0, with no visible error.
           #
-          # This NARROWS the window, it does not close it: a registry error
-          # during pass 2 can still stop part-way, because the registry has
-          # no transaction spanning several tags. See D27.
+          # This narrows the window rather than closing it: a registry error
+          # during pass 2 can still stop part-way, because the registry can't
+          # update several tags as one transaction. See D27.
           plan=/tmp/fuse-plan
           rm -rf "$plan"; mkdir -p "$plan"
           for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
@@ -456,12 +452,11 @@ jobs:
                                     --stamp "$STAMP" \
                                     --registry "$REGISTRY" --owner "$OWNER")
 
-              # The immutable tag must not already exist. The concurrency
-              # group serialises runs on main and a build takes 17+ minutes,
-              # so two runs cannot tag in the same minute - but that is an
-              # argument, and this repo has been bitten twice by trusting
-              # one. Overwriting a tag documented as never reused is worse
-              # than failing the publish, so prove it instead.
+              # The stamped tag mustn't already exist. Runs on main are
+              # queued one at a time and a build takes 17+ minutes, so two
+              # runs shouldn't be able to tag in the same minute. But
+              # overwriting a tag we promise never to reuse would be worse
+              # than failing the publish, so we check rather than assume.
               immutable=""
               for t in "${tags[@]}"; do
                 case "$t" in *-"$STAMP") immutable="$t" ;; esac
@@ -499,13 +494,12 @@ jobs:
 
               docker buildx imagetools create "${targs[@]}" "${refs[@]}"
 
-              # Record the INDEX digest. Signing the index covers every tag
-              # pointing at it, so 3.2.0-20260920-2203, 3.2.0 and 3.2 need one
-              # signature between them - and the signature stays valid when a
-              # moving tag is later repointed elsewhere, because it is bound
-              # to the bytes. That is exactly why the date tag matters: after
-              # next week's rebuild the signature still resolves through the
-              # date tag, while 3.2.0 has moved on.
+              # Record the index digest. One signature on the index covers
+              # every tag pointing at it (3.2.0-20260920-2244, 3.2.0 and 3.2
+              # share one), and it stays valid when a moving tag later points
+              # somewhere else, because it belongs to the bytes. That's why the
+              # stamped tag matters: after next week's rebuild, the signature
+              # is still reachable through it, while 3.2.0 has moved on.
               idx="$(docker buildx imagetools inspect "${tags[0]}" \
                        --format '{{.Manifest.Digest}}')"
               echo "${REGISTRY}/${OWNER}/kea-${img}@${idx}" >> /tmp/sign-refs.txt
@@ -536,13 +530,13 @@ jobs:
           done
           exit "$fail"
 
-      # The shipped SPDX document is checked before publishing (smoke gate 2),
-      # but that proves the INPUT exists - not that buildx merged it into the
-      # attestation it published. This asserts the claim itself: the SBOM
-      # attached to the tag a user pulls names Kea, at the right version.
+      # The SPDX document in each image is checked before publishing (smoke
+      # gate 2), but that only shows the input is there, not that buildx
+      # merged it into the SBOM it published. This checks what people actually
+      # get: the SBOM on the tag they pull lists Kea, at the right version.
       #
-      # Before this existed, the published SBOM for kea-dhcp4:3.2 catalogued
-      # 25 apk packages and did not contain the string "kea" at all.
+      # Before this, the published SBOM for kea-dhcp4:3.2 listed 25 apk
+      # packages and didn't mention Kea at all (D23).
       - name: Verify the published SBOM names Kea
         env:
           OWNER: ${{ github.repository_owner }}
@@ -567,10 +561,10 @@ jobs:
           done
           exit "$fail"
 
-      # Signing happens LAST, after the manifests are verified multi-arch.
-      # A signature asserts "this repository's CI produced these bytes"; it
-      # would be actively misleading to attach one to an image we had not
-      # yet confirmed was correctly assembled.
+      # Signing comes last, after the images are confirmed multi-arch. A
+      # signature says "this repository's CI produced these bytes", so it
+      # shouldn't go on an image we haven't yet confirmed was put together
+      # correctly.
       - name: Sign published images (keyless)
         env:
           COSIGN_YES: 'true'
@@ -578,20 +572,20 @@ jobs:
           set -euo pipefail
           test -s /tmp/sign-refs.txt || { echo "::error::no refs to sign"; exit 1; }
 
-          # The index, and the two platform images inside it - so a digest
-          # pinned per architecture verifies too. NOT the attestation
-          # manifests, which nobody pulls, and NOT --recursive, which signs
-          # them anyway. On GHCR every signature costs two package versions
-          # (no Referrers API, so cosign falls back to a tagged index beside
-          # the bundle): recursive was 10 per index, this is 6. See D25.
+          # Sign the index and the two platform images inside it, so a
+          # digest pinned to one architecture verifies too. Not the
+          # attestations, which nobody pulls, so not --recursive, which would
+          # sign them as well. On GHCR each signature is two package versions
+          # (there's no Referrers API, so cosign adds a tagged index beside
+          # the bundle): --recursive meant 10 per index, this is 6. See D25.
           : > /tmp/sign-subjects.txt
           while read -r ref; do
             [ -n "$ref" ] || continue
             repo="${ref%@*}"
             mapfile -t platforms < <(docker buildx imagetools inspect --raw "$ref" \
               | jq -r '.manifests[] | select(.platform.os != "unknown") | .digest')
-            # Already asserted amd64+arm64 above; re-check here, because a
-            # wrong count would silently sign too little or too much.
+            # Already checked for amd64+arm64 above. Check again here, because
+            # a wrong count would quietly sign too little or too much.
             if [ "${#platforms[@]}" -ne 2 ]; then
               echo "::error::${ref} has ${#platforms[@]} platform images, expected 2"
               exit 1
@@ -606,8 +600,8 @@ jobs:
           done < /tmp/sign-subjects.txt
 
           # Not `cosign verify ... && echo ok`: a failure on the left of && is
-          # exempt from set -e, so every subject but the last could fail
-          # verification and the step would still pass. It did, until D25.
+          # exempt from set -e, so every image but the last could fail to
+          # verify and the step would still pass. That's how it was until D25.
           echo "::group::verify what we just signed"
           fail=0
           while read -r subject; do

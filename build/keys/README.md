@@ -51,15 +51,15 @@ curl -sI "https://keys.openpgp.org/vks/v1/by-fingerprint/<FPR>"
 
 ## Re-vendoring
 
-Builds fail closed when ISC signs a release with a key outside this block, so
-re-vendoring is forced on you at exactly the right moment. When it happens:
+If ISC signs a release with a key that isn't in this block, the build stops,
+so you'll find out exactly when the block needs updating. When that happens:
 
 1. Fetch the new block from `https://www.isc.org/docs/isc-keyblock.asc`.
 2. Diff the key set against the table above — `gpg --show-keys` on both.
-3. Confirm the *added* key out of band. Do not simply accept it because the
-   tarball it signs verifies against it; that is circular.
+3. Confirm the *new* key through a separate channel. Its tarball verifying
+   against it doesn't prove anything on its own; that would be circular.
 4. Update the table, the date, and the recorded check above.
 5. Commit the keyblock and this file together, in their own commit.
 
-`scripts/check-upstream.py` reports on this block weekly: it fails loudly if
-any key is revoked or expired, and warns at 90 days before an expiry.
+`scripts/check-upstream.py` checks this block weekly: it opens an issue if a
+key is revoked or expired, and warns 90 days before one expires.

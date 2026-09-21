@@ -1,30 +1,30 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# kea-dhcp4 on Kubernetes, serving a real L2 segment via hostNetwork.
+# kea-dhcp4 on Kubernetes, serving the node's network through hostNetwork.
 #
-# Every security setting below was verified against the published image
-# rather than copied from a hardening checklist - several of them interact
-# with how these images grant privilege, and one common recommendation
-# breaks them outright. The notes say which.
+# Each security setting below was tested against the published image. A few
+# of them interact with the way these images get their permissions (and one
+# common hardening step stops the server starting unless you add two
+# capabilities back), so the comments explain each one.
 #
-# WHY hostNetwork
-#     A DHCP server must see broadcast traffic on the segment it serves. Pod
-#     networking does not carry it. hostNetwork puts the daemon on the node's
-#     interfaces, which is the straightforward answer on bare metal. The
-#     alternatives are a DHCP relay pointing at a ClusterIP, or Multus/macvlan
-#     if your cluster already runs it.
+# Why hostNetwork
+#     A DHCP server has to hear broadcasts on the network it serves, and pod
+#     networking doesn't carry them. hostNetwork puts the server on the
+#     node's own interfaces, which is the simplest option on bare metal. A
+#     DHCP relay pointing at a Service works too, and so does Multus with
+#     macvlan if your cluster already has it.
 #
-#     Consequence: the pod binds UDP 67 on the NODE. Two of these on one node
-#     will not both start, and anything else using 67 there will conflict.
+#     The pod binds UDP port 67 on the node, so only one of these can run per
+#     node, and nothing else on that node can use port 67.
 #
-# WHY NOT A DaemonSet
-#     A DaemonSet would run one per node, and several DHCP servers answering
-#     on the same segment from one memfile lease database each is not a
-#     highly-available setup - it is a duplicate-allocation bug waiting to
-#     happen. One replica, pinned to a node. For real HA use Kea's own HA
-#     hook with a shared database, which is beyond this example.
+# Why not a DaemonSet
+#     A DaemonSet runs one copy per node. Several DHCP servers on the same
+#     network, each with its own lease file, would hand out the same address
+#     twice. So this runs one replica, pinned to one node. For high
+#     availability, use Kea's own HA hook with a shared database (beyond the
+#     scope of this example).
 #
-# apply with:  kubectl apply -f kea-dhcp4.yaml
+# Apply with:  kubectl apply -f kea-dhcp4.yaml
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -35,17 +35,17 @@ data:
   kea-dhcp4.conf: |
     {
       "Dhcp4": {
-        // The node interface facing the segment you serve. "*" would bind
-        // every interface on the node, including ones you did not mean.
+        // The node's interface on the network you're serving. "*" would
+        // listen on every interface on the node, which is rarely what you want.
         "interfaces-config": {
           "interfaces": [ "eth0" ],
           "service-sockets-max-retries": 5,
           "service-sockets-require-all": true
         },
 
-        // memfile needs a writable /var/lib/kea. Under Kubernetes that is
-        // the PVC below - the image's VOLUME declaration does nothing here
-        // (see the note on volumes).
+        // memfile needs a writable /var/lib/kea. On Kubernetes, that's the
+        // PVC below (Kubernetes doesn't use the image's VOLUME setting; see
+        // the note on volumes).
         "lease-database": {
           "type": "memfile",
           "name": "/var/lib/kea/kea-leases4.csv",
@@ -102,8 +102,9 @@ metadata:
   labels: { app.kubernetes.io/name: kea-dhcp4 }
 spec:
   replicas: 1
-  # RWO volume plus a host port: the old pod must be gone before the new one
-  # starts, or the replacement cannot bind and cannot mount.
+  # With a ReadWriteOnce volume and a host port, the old pod has to stop
+  # before the new one starts, or the new one can't bind the port or mount
+  # the volume.
   strategy:
     type: Recreate
   selector:
@@ -120,15 +121,15 @@ spec:
         kubernetes.io/hostname: CHANGE-ME-node-name
 
       securityContext:
-        # Numeric, matching the image's USER 10000:10000. runAsNonRoot can
-        # only be enforced when the user is numeric - a named user leaves
-        # the kubelet unable to tell, and it refuses to start the pod.
+        # Numeric, matching the image's USER 10000:10000. Kubernetes can only
+        # check runAsNonRoot when the user is a number; with a user name it
+        # can't tell, and refuses to start the pod.
         runAsNonRoot: true
         runAsUser: 10000
         runAsGroup: 10000
-        # Makes the PVC group-writable by GID 10000. Without it the lease
-        # directory is root-owned and the daemon cannot write - the failure
-        # is at startup, not later.
+        # Makes the volume writable by group 10000. Without it, the lease
+        # directory belongs to root and Kea can't write to it, so it stops at
+        # startup.
         fsGroup: 10000
         seccompProfile:
           type: RuntimeDefault
@@ -136,40 +137,39 @@ spec:
       containers:
         - name: kea-dhcp4
           image: ghcr.io/dapalab/kea-dhcp4:3.2.0-20260920-2244
-          # Pin the stamped tag, not 3.2.0 - the version tags move with every
-          # weekly rebuild. See docs/tags-and-updates.md.
+          # A stamped tag, which never changes. Version tags like 3.2.0 are
+          # rebuilt every week. See docs/tags-and-updates.md.
           imagePullPolicy: IfNotPresent
 
           securityContext:
-            # VERIFIED, because the interaction is not obvious. These images
-            # grant privilege through FILE capabilities on the binary
-            # (cap_net_bind_service,cap_net_raw=ep), not by running as root.
+            # These images get their permissions from file capabilities on
+            # the binary (cap_net_bind_service,cap_net_raw=ep), rather than
+            # by running as root. Tested:
             #
-            #   drop ALL and nothing else  -> "exec /usr/sbin/kea-dhcp4:
-            #                                 operation not permitted"
-            #   drop ALL + add these two   -> works; CapEff 0x2400
+            #   drop ALL, nothing added   -> "exec /usr/sbin/kea-dhcp4:
+            #                                operation not permitted"
+            #   drop ALL, add these two   -> works (CapEff 0x2400)
             #
-            # add: widens the BOUNDING set; the file capabilities then do the
-            # actual granting. Both halves are required.
+            # "add" makes the capabilities available to the container, and
+            # the file capabilities then let Kea use them. It needs both.
             capabilities:
               drop: [ "ALL" ]
               add:
                 - NET_BIND_SERVICE   # bind UDP/67
                 - NET_RAW            # the DHCPv4 broadcast path
-            # Also verified: this does NOT break the file capabilities, which
-            # is the opposite of what one might expect from a flag whose job
-            # is to set NoNewPrivs. Measured with Docker's equivalent
-            # (--security-opt no-new-privileges): CapEff was unchanged at
-            # 0x2400 and the daemon bound UDP/67 normally.
+            # Safe to use here, even though you might expect it to block file
+            # capabilities (it sets NoNewPrivs). Tested with Docker's
+            # equivalent, --security-opt no-new-privileges: CapEff stayed at
+            # 0x2400 and Kea bound UDP port 67 normally.
             allowPrivilegeEscalation: false
-            # Verified with the equivalent Docker run: the daemon starts and
-            # reports healthy with the root filesystem read-only, given the
-            # two writable mounts below.
+            # Tested with the equivalent Docker run: Kea starts and reports
+            # healthy with a read-only root filesystem, given the two
+            # writable mounts below.
             readOnlyRootFilesystem: true
 
-          # Kubernetes IGNORES the image's HEALTHCHECK entirely, so it has to
-          # be restated. This is the same status-get probe over the control
-          # socket that the image itself uses.
+          # Kubernetes doesn't use the image's HEALTHCHECK, so it's repeated
+          # here as probes: the same status-get check over the control socket
+          # that the image uses.
           startupProbe:
             exec:
               command:
@@ -202,11 +202,11 @@ spec:
             requests: { cpu: 50m, memory: 64Mi }
             limits:   { memory: 256Mi }
 
-          # The image declares VOLUME for /etc/kea and /var/lib/kea. That is
-          # a Docker concept and Kubernetes ignores it completely - nothing
-          # is persisted and nothing is made writable on its account. Every
-          # writable path has to be an explicit volume here, which is why
-          # /run/kea appears below even though it only holds a socket.
+          # The image declares VOLUME for /etc/kea and /var/lib/kea, but
+          # that's a Docker feature: Kubernetes doesn't use it, so nothing is
+          # kept or made writable because of it. Every writable path needs a
+          # volume here, which is why /run/kea is listed even though it only
+          # holds a socket.
           volumeMounts:
             - name: config
               mountPath: /etc/kea/kea-dhcp4.conf
@@ -225,7 +225,7 @@ spec:
           persistentVolumeClaim:
             claimName: kea-dhcp4-leases
         - name: run
-          # Kea refuses a control-socket directory more permissive than 0750,
-          # so this cannot simply be a default-mode emptyDir shared around.
-          # fsGroup above gives GID 10000 access to it.
+          # Kea won't use a control-socket directory more open than 0750, so
+          # a default emptyDir can't be shared around here. fsGroup above
+          # gives group 10000 access to it.
           emptyDir: {}

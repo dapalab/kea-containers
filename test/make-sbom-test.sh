@@ -3,14 +3,14 @@
 #
 # Tests for build/make-sbom.sh.
 #
-# The failure this guards against is silent: BuildKit's scanner skips an SBOM
-# document it cannot parse, so a malformed one puts us straight back to
-# publishing an SBOM with no Kea in it - and the build stays green. So the
-# generator validates its own output, and these tests prove that validation
-# rejects what it should.
+# The problem this guards against is a silent one: BuildKit's scanner skips
+# an SBOM document it can't read, so a malformed one would mean publishing an
+# SBOM without Kea in it, while the build stayed green. So the generator
+# checks its own output, and these tests show that check rejects what it
+# should.
 #
-# Needs only sh, sha256sum and python3, so it runs in lint rather than behind
-# a Kea compile.
+# It only needs sh, sha256sum and python3, so it runs in lint rather than
+# after a Kea compile.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,7 +50,7 @@ pass "valid SPDX naming kea 3.2.0, MPL-2.0, with checksum, CPE and purl"
 ###############################################################################
 info "The recorded checksum is the tarball's, not a constant"
 ###############################################################################
-# A hash that never changes would be the sha256sum bug again in a new place.
+# A hash that never changed would be the old sha256sum problem (D2) again.
 echo "different bytes entirely" > "$WORK/other.tar.xz"
 "$GEN" 3.2.0 "$WORK/other.tar.xz" "$URL" "$WORK/out2.spdx.json" >/dev/null
 A="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["packages"][0]["checksums"][0]["checksumValue"])' "$WORK/out/kea.spdx.json")"
@@ -62,8 +62,8 @@ pass "checksum tracks the actual bytes ($A != $B)"
 ###############################################################################
 info "Output is reproducible, so it cannot break the tested==published check"
 ###############################################################################
-# A timestamp here would change the layer between the test build and the push
-# build and trip the digest assertion in build.yml (D21).
+# A timestamp here would make the test and push builds differ, and fail
+# build.yml's check that the published image is the tested one (D21).
 "$GEN" 3.2.0 "$WORK/kea.tar.xz" "$URL" "$WORK/rep1.json" >/dev/null
 sleep 1
 "$GEN" 3.2.0 "$WORK/kea.tar.xz" "$URL" "$WORK/rep2.json" >/dev/null
@@ -91,21 +91,21 @@ expect_fail "missing output argument"    "3.2.0"  "$WORK/kea.tar.xz" "$URL"
 ###############################################################################
 info "The shipped-document validator rejects what it should"
 ###############################################################################
-# check-sbom-doc.py is what the smoke test runs against every image. It began
-# life as an inline `python3 -c` with nested quote escaping, got the escaping
-# wrong, and the resulting syntax error was invisible because the caller sent
-# stderr to /dev/null - the assertion failed for a reason nobody could see.
-# Hence a real file, and hence these cases.
+# check-sbom-doc.py is what the smoke test runs against every image. It
+# started as an inline `python3 -c` with nested quoting, got the quoting
+# wrong, and the syntax error was hidden because the caller sent stderr to
+# /dev/null, so the check failed for a reason nobody could see. So now it's a
+# real file, with these tests.
 VALIDATOR="$HERE/check-sbom-doc.py"
 GOOD="$WORK/out/kea.spdx.json"
 
 "$VALIDATOR" 3.2.0 < "$GOOD" >/dev/null || fail "rejected a valid document"
 pass "accepts the document make-sbom.sh just produced"
 
-# Document arrives on STDIN. An earlier version took a command string and
+# The document arrives on stdin. An earlier version took a command string and
 # tried to run it as a single word, so every case failed with "not valid
-# JSON" - three green ticks, none of them testing what they claimed.
-# Each expected message is asserted, not just the exit status.
+# JSON": three passing tests, none testing what it claimed to. So each case
+# now checks the expected message, not just the exit status.
 reject() {  # reject <label> <version> <expected-message-substring>
   local label="$1" version="$2" want="$3"
   if "$VALIDATOR" "$version" >"$WORK/v.log" 2>&1; then

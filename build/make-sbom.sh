@@ -5,32 +5,27 @@
 #
 #   usage: make-sbom.sh <version> <tarball> <url> <output.spdx.json>
 #
-# WHY THIS EXISTS
-#     buildx --sbom=true catalogues the package manager's view of the image.
-#     Kea is not installed by apk - it is compiled from source and copied out
-#     of a builder stage - so it does not appear. Measured on the published
-#     kea-dhcp4:3.2 before this existed: 25 apk packages catalogued, and the
-#     string "kea" absent from the SBOM entirely, while the image ships 23
-#     libkea-*.so libraries, the daemon and a dozen hook libraries.
+# Why this exists
+#     buildx --sbom=true lists what the package manager installed. Kea isn't
+#     installed by apk (it's compiled from source and copied out of a build
+#     stage), so it didn't appear. On the published kea-dhcp4:3.2 before this
+#     existed: 25 apk packages listed, and no mention of Kea at all, even
+#     though the image contains 23 libkea-*.so libraries, the server and a
+#     dozen hook libraries. See D23.
 #
-#     An SBOM that lists busybox and tzdata but not the DHCP server is worse
-#     than no SBOM, because it reads as diligence.
+# How it gets into the published SBOM
+#     BuildKit's syft scanner reads SBOM documents it finds in the image and
+#     merges them into the SBOM it publishes. Tested with a local build: with
+#     this document at /usr/share/sbom/kea.spdx.json, the published SBOM
+#     gains a `kea` package with its version, MPL-2.0, the upstream URL, the
+#     tarball checksum and a CPE (cpe:2.3:a:isc:kea:<version>). The CPE is
+#     what lets a vulnerability scanner match Kea's CVEs.
 #
-# HOW IT LANDS IN THE ATTESTATION
-#     BuildKit's syft scanner reads SBOM documents that are present in the
-#     image and merges them into the attestation it produces. Verified
-#     against a local build: with this document at
-#     /usr/share/sbom/kea.spdx.json the published SBOM gains a `kea` package
-#     with its version, MPL-2.0, the upstream URL, the tarball checksum and
-#     a synthesised CPE (cpe:2.3:a:kea:kea:<version>) - which is also what
-#     lets a vulnerability scanner match Kea CVEs at all.
-#
-# THE CHECKSUM IS THE HONEST USE OF A HASH
-#     D2 removed a bare `sha256sum` from the verification block because it
-#     compared the hash to nothing. Recording that same hash HERE, as the
-#     checksum of the source the binaries were built from, is the use that
-#     was always worth having: it is a statement about provenance, not a
-#     check pretending to be one.
+# A good home for the tarball's hash
+#     D2 removed a bare `sha256sum` from the verification step, because it
+#     compared the hash with nothing. Recording the same hash here, as the
+#     checksum of the source the binaries were built from, is a genuine use
+#     for it: a record of where the image came from, not a check.
 set -eu
 
 version="${1:?usage: make-sbom.sh <version> <tarball> <url> <output>}"
@@ -47,9 +42,9 @@ esac
 sha="$(sha256sum "$tarball" | cut -d' ' -f1)"
 [ -n "$sha" ] || { echo "FATAL: could not hash $tarball" >&2; exit 1; }
 
-# SOURCE_DATE_EPOCH keeps this byte-identical across the test build and the
-# push build; a timestamp here would change the layer and break the
-# tested-equals-published assertion in build.yml (D21).
+# SOURCE_DATE_EPOCH keeps this byte-identical in the test build and the push
+# build. A live timestamp would change the layer and fail build.yml's check
+# that the published image is the tested one (D21).
 created="$(date -u -d "@${SOURCE_DATE_EPOCH:-0}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
            || echo "1970-01-01T00:00:00Z")"
 
@@ -108,9 +103,9 @@ cat > "$out" <<JSON
 }
 JSON
 
-# Emitting invalid JSON would be silent: the scanner skips what it cannot
-# parse, and the SBOM would go back to omitting Kea with nothing to show for
-# it. Parse it back before declaring success.
+# Invalid JSON would fail silently: the scanner skips what it can't parse,
+# and Kea would drop out of the SBOM with no error. So read it back before
+# reporting success.
 if command -v python3 >/dev/null 2>&1; then
     python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
         p=d['packages'][0]; assert p['name']=='kea', p; \

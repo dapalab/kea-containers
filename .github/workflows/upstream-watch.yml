@@ -1,22 +1,22 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Watch ISC's supported Kea branch set and the vendored PGP keyblock, and open
-# an issue when either changes.
+# Watch which Kea branches ISC supports, and the stored PGP keyblock, and
+# open an issue when either changes.
 #
-# Renovate tracks version numbers but has no idea about ISC's support policy -
-# it cannot tell us a new stable branch has appeared or an old one has reached
-# EOL. This closes that gap.
+# Renovate tracks version numbers but knows nothing about ISC's support
+# policy: it can't tell us when a new stable branch appears or an old one
+# reaches end of life. This fills that gap.
 #
-# Design note: an issue is opened for BOTH "the set changed" and "the check
-# itself broke". A scraper that silently stops matching is worse than no
-# scraper, because silence reads as "nothing changed". Here, silence always
-# means the check ran and genuinely found nothing.
+# It opens an issue both when the branches change and when the check itself
+# breaks. Otherwise a scraper that stopped matching would go quiet, and quiet
+# would look like "nothing changed". This way, silence always means the check
+# ran and found nothing.
 name: upstream-watch
 
 on:
   schedule:
-    # Thursdays, deliberately offset from the Monday rebuild so the two are
-    # easy to tell apart in the Actions list.
+    # Thursdays, away from the Monday rebuild, so the two are easy to tell
+    # apart in the Actions list.
     - cron: '42 6 * * 4'
   workflow_dispatch:
 
@@ -48,8 +48,9 @@ jobs:
             *) echo "::error::unexpected exit code $code"; exit 1 ;;
           esac
 
-      # Do not open a second issue if one is already open. The weekly schedule
-      # would otherwise file a duplicate every Thursday until someone acts.
+      # Don't open a second issue if one is already open. Otherwise the
+      # weekly schedule would file a duplicate every Thursday until someone
+      # dealt with it.
       - name: Open or update the tracking issue
         if: steps.check.outputs.code != '0'
         env:
@@ -67,7 +68,7 @@ jobs:
                labels="upstream-watch" ;;
           esac
 
-          # Ensure labels exist; harmless if they already do.
+          # Make sure the labels exist (harmless if they already do).
           gh label create upstream-watch --color 0E8A16 \
             --description "Raised by the upstream support-set watcher" 2>/dev/null || true
           gh label create bug --color D73A4A 2>/dev/null || true

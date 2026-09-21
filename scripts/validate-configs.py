@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: MPL-2.0
 """Check that every shipped config parses as JSON once comments are stripped.
 
-Kea accepts // and /* */ comments, so these files are not valid JSON as-is.
-This catches the mistakes a human makes editing them - a trailing comma, an
-unbalanced brace - without needing Kea itself, so it runs in the lint job in
-seconds rather than waiting on a 30-minute build.
+Kea accepts // and /* */ comments, so these files aren't valid JSON as they
+are. This catches the mistakes people make editing them (a trailing comma, an
+unbalanced brace) without needing Kea itself, so it runs in the lint job in
+seconds rather than after a 30-minute build.
 
-Note this proves the file is well-formed, NOT that Kea accepts it. The build
-job runs `kea-dhcpX -t` against the real binary for that.
+It only shows the file is well-formed, not that Kea accepts it. The build job
+runs `kea-dhcpX -t` with the real binary for that.
 """
 import json
 import re
@@ -16,9 +16,9 @@ import sys
 import pathlib
 
 PATTERNS = ["build/config/*.conf", "examples/*.conf", "test/*.conf"]
-# Kubernetes examples carry the Kea config inline in a ConfigMap, so it is
-# not a .conf file and would otherwise go unchecked - which is exactly the
-# sort of file nobody notices is broken until they apply it.
+# The Kubernetes example has its Kea config inline in a ConfigMap, so it
+# isn't a .conf file and would otherwise go unchecked, and nobody would
+# notice it was broken until they applied it.
 YAML_PATTERNS = ["examples/kubernetes/*.yaml"]
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -77,9 +77,8 @@ def main() -> int:
                 rc = 1
             else:
                 print(f"  ok    {rel} [{name}]")
-        # Silently finding nothing would mean a renamed key quietly disables
-        # this check - the failure mode being guarded against everywhere else
-        # in this repo.
+        # Finding nothing, quietly, would mean a renamed key had switched this
+        # check off without anyone noticing. So treat it as an error.
         if not found:
             print(f"  FAIL  {rel}: no embedded '*.conf: |' block found; did the "
                   f"key change?", file=sys.stderr)

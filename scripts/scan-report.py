@@ -2,32 +2,31 @@
 # SPDX-License-Identifier: MPL-2.0
 """Turn grype JSON into a GitHub issue body, and decide whether to raise one.
 
-WHY A SCRIPT RATHER THAN jq IN THE WORKFLOW
-    The interesting behaviour is what happens when the scan does NOT produce
-    findings, which is most days. Silence has to mean "ran and found
-    nothing", never "the scanner errored and the pipe swallowed it". That
-    distinction is worth testing, and workflow YAML is not testable.
+Why a script rather than jq in the workflow
+    The important behaviour is what happens when the scan finds nothing,
+    which is most days. Silence has to mean "ran and found nothing", never
+    "the scanner failed and the error got lost". That's worth testing, and
+    workflow YAML can't be tested.
 
-WHY TWO SCANS PER IMAGE
-    grype scanning an image catalogues apk packages. It does NOT read the
-    SPDX document the image ships, verified against a local image embedding
-    a deliberately old Kea: scanning the image found 0 Kea CVEs, scanning
-    the document found 3. Kea is compiled from source, so without the second
-    scan the only component whose CVEs actually matter here is invisible.
+Why two scans per image
+    grype scanning an image lists apk packages, but doesn't read the SPDX
+    document inside the image. Tested with an image containing a deliberately
+    old Kea: the image scan found 0 Kea CVEs, and the document scan found 3.
+    Kea is compiled from source, so without the second scan, the component
+    that matters most here wouldn't be checked.
 
-WHY grype AND NOT trivy
+Why grype and not trivy
     Measured against an SBOM naming Kea 1.4.0, which has known CVEs:
 
         trivy sbom  -> 0 findings; --list-all-pkgs shows it parses no
                        packages at all from the document
         grype sbom  -> CVE-2018-5739, CVE-2019-6472, CVE-2019-6474
 
-    grype does CPE matching for packages it does not recognise as belonging
-    to an ecosystem, which is exactly the case for software built from a
-    tarball. trivy is blind to it. The CPE in the SBOM (D23) is what makes
-    this work.
+    grype can match CPEs for software it can't place in a package ecosystem,
+    which is exactly the case for anything built from a tarball; trivy
+    can't. The CPE in the SBOM (D23) is what makes this work.
 
-EXIT CODES
+Exit codes
     0  scanned cleanly, nothing at or above the threshold
     1  the check itself is broken - missing, unparseable or non-grype input
     2  findings at or above the threshold
@@ -42,7 +41,7 @@ ORDER = ["Unknown", "Negligible", "Low", "Medium", "High", "Critical"]
 
 
 def load(path: pathlib.Path) -> dict:
-    """Read one grype report, refusing anything that is not one."""
+    """Read one grype report, and reject anything that isn't one."""
     if not path.is_file():
         raise RuntimeError(f"no such scan output: {path}")
     if path.stat().st_size == 0:
@@ -109,10 +108,10 @@ def main() -> int:
 
     total = sum(len(v) for v in per_target.values())
 
-    # A target that could not be scanned outranks findings from the ones that
-    # could. Otherwise a broken scan is filed under "vulnerabilities found",
-    # the broken part goes unmentioned, and the coverage gap is invisible
-    # precisely because something else happened to be reported.
+    # An image that couldn't be scanned takes priority over findings from the
+    # ones that could. Otherwise a partly broken scan would be filed under
+    # "vulnerabilities found", and the gap in coverage would go unmentioned
+    # just because something else happened to be reported.
     if total == 0 and not a.partial:
         print(f"Scanned {len(per_target)} target(s); "
               f"nothing at {a.threshold} or above.")

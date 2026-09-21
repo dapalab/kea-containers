@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Assert build.yml's path filters and build-skip.yml's are exact inverses.
+"""Check that build.yml's path filters and build-skip.yml's are exact opposites.
 
-WHY THIS EXISTS
-    build.yml skips the image matrix for changes that cannot affect an image.
-    Branch protection requires a check named 'required', which build.yml
-    normally provides - so for the skipped cases build-skip.yml provides it
-    instead, using the INVERSE path filter.
+Why this exists
+    build.yml skips the build for changes that can't affect an image. Branch
+    protection requires a check named 'required', which build.yml normally
+    provides, so for the skipped cases build-skip.yml provides it instead,
+    using the opposite path filter.
 
-    If those lists ever drift, the consequence is not a build failure. It is a
-    pull request that can never merge: neither workflow triggers, 'required'
-    never reports, and branch protection waits forever. Or, less dangerously,
-    both trigger and report the same check twice.
+    If those lists drift apart, nothing fails. Instead, a pull request can
+    never merge: neither workflow runs, 'required' never reports, and branch
+    protection waits forever. (Or, less seriously, both run and report the
+    same check twice.)
 
-    That is a silent, confusing failure discovered at the worst moment. This
-    turns it into a lint error found in seconds.
+    That's a quiet, confusing problem that tends to turn up at a bad moment.
+    This turns it into a lint error, found in seconds.
 
-    build.yml carries the filter on BOTH its push and pull_request triggers,
-    so all three lists must agree.
+    build.yml has the filter on both its push and pull_request triggers, so
+    all three lists have to agree.
 """
 import pathlib
 import re

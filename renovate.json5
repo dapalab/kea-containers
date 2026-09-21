@@ -2,21 +2,22 @@
 //
 // Renovate configuration. Run self-hosted from .github/workflows/renovate.yml.
 //
-// Three things are tracked, and they are deliberately treated differently:
+// Several kinds of update are tracked, each handled differently (D16):
 //
-//   Kea version   never automerged. A DHCP server version bump is a human
-//                 decision, even when CI is green.
-//   Alpine base   automerged on digest, because that is how Alpine security
-//                 fixes reach the images between releases.
-//   Actions       automerged, pinned by commit SHA.
+//   Kea version   never merged automatically. Updating a DHCP server is a
+//                 human decision, even when CI is green.
+//   Alpine base   digest updates merge automatically, because that's how
+//                 Alpine security fixes reach the images between releases.
+//   Actions       merged automatically, pinned by commit SHA.
+//   Runners       never merged automatically (see below).
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
 
   extends: [
     'config:recommended',
     ':dependencyDashboard',
-    // Pin GitHub Actions to commit SHAs rather than moving tags. A tag can be
-    // repointed at different code; a SHA cannot.
+    // Pin GitHub Actions to commit SHAs rather than tags. A tag can be moved
+    // to different code; a SHA can't.
     'helpers:pinGitHubActionDigests',
   ],
 
@@ -24,30 +25,28 @@
   semanticCommits: 'enabled',
   commitMessageLowerCase: 'never',
 
-  // The workflow's cron decides when Renovate runs, so do not add a second
-  // schedule here - it would only create confusing windows where a run happens
-  // but produces nothing.
+  // The workflow's cron decides when Renovate runs. A second schedule here
+  // would only create confusing runs that do nothing.
   schedule: ['at any time'],
 
   labels: ['dependencies'],
   prConcurrentLimit: 5,
   prHourlyLimit: 0,
 
-  // Use GitHub's native auto-merge rather than Renovate merging the PR itself.
-  // This matters because native auto-merge is enforced by branch protection:
-  // GitHub will not merge until the required 'required' check passes, whatever
-  // Renovate believes. Renovate's own merge logic checks statuses too, but it
-  // is Renovate policing itself; this is the platform policing it.
+  // Use GitHub's own auto-merge rather than having Renovate merge the PR.
+  // GitHub's auto-merge respects branch protection, so it won't merge until
+  // the 'required' check passes. Renovate checks statuses too, but this way
+  // GitHub enforces it (D20).
   platformAutomerge: true,
 
   customManagers: [
     {
       // Kea version, per branch.
       //
-      // Both entries resolve to the same upstream repository, so they must be
-      // given DISTINCT dep names or their version constraints would collide.
-      // depName is synthesised from the branch key ("kea-3.0", "kea-3.2")
-      // while packageName carries the real lookup target.
+      // Both entries point at the same upstream repository, so they need
+      // different names, or their version limits would clash. depName is
+      // made from the branch key ("kea-3.0", "kea-3.2"), while packageName
+      // holds the real lookup.
       customType: 'regex',
       description: 'Kea version in versions.json, per stable branch',
       managerFilePatterns: ['/^versions\\.json$/'],
@@ -57,15 +56,14 @@
       depNameTemplate: 'kea-{{{branchId}}}',
       packageNameTemplate: 'isc-projects/kea',
       datasourceTemplate: 'github-tags',
-      // Upstream tags look like "Kea-3.2.0" - capital K, hyphen, no v prefix.
-      // Development releases use the identical shape (Kea-3.3.1), so the tag
-      // format offers no protection against odd minors; allowedVersions below
-      // does all of that work.
+      // Upstream tags look like "Kea-3.2.0": capital K, hyphen, no v prefix.
+      // Development releases look exactly the same (Kea-3.3.1), so the tag
+      // format can't filter them out; allowedVersions below does that.
       extractVersionTemplate: '^Kea-(?<version>\\d+\\.\\d+\\.\\d+)$',
       versioningTemplate: 'semver',
     },
     {
-      // Alpine base image, pinned by tag AND digest.
+      // Alpine base image, pinned by tag and digest.
       customType: 'regex',
       description: 'Alpine base image in versions.json',
       managerFilePatterns: ['/^versions\\.json$/'],
@@ -75,8 +73,8 @@
       datasourceTemplate: 'docker',
     },
     {
-      // The Dockerfile's ARG default. CI always passes an explicit digest, so
-      // this only affects local builds - but a stale default is still a trap.
+      // The Dockerfile's ARG default. CI always passes a digest explicitly,
+      // so this only affects local builds, but it's worth keeping current.
       customType: 'regex',
       description: 'ALPINE_REF fallback in the Dockerfile',
       managerFilePatterns: ['/^build/Dockerfile$/'],
@@ -86,9 +84,9 @@
       datasourceTemplate: 'docker',
     },
     {
-      // The grype image used by the scan workflow, pinned by tag AND digest.
-      // A scanner that silently drifts to a different version is a scanner
-      // whose "no findings" means something different from last week.
+      // The grype image used by the scan workflow, pinned by tag and digest.
+      // If the scanner quietly changed version, "no findings" could mean
+      // something different from one week to the next.
       customType: 'regex',
       description: 'grype image in the scan workflow',
       managerFilePatterns: ['/^\\.github/workflows/scan\\.yml$/'],
@@ -101,11 +99,11 @@
 
   packageRules: [
     // ---------------------------------------------------------------------
-    // Kea: constrain each branch to its own minor, forever.
+    // Kea: keep each branch to its own minor version.
     //
-    // This is what stops the 3.0 LTS entry being offered 3.2.x, and what
-    // structurally prevents an odd-numbered development release ever being
-    // proposed - 3.1 and 3.3 fall outside both ranges.
+    // This stops the 3.0 LTS entry being offered 3.2.x, and means an
+    // odd-numbered development release is never proposed, since 3.1 and 3.3
+    // fall outside both ranges.
     // ---------------------------------------------------------------------
     {
       matchDepNames: ['kea-3.0'],
@@ -118,7 +116,8 @@
       addLabels: ['kea'],
     },
     {
-      // Never automerge a Kea bump, however green CI is. Someone decides.
+      // Never merge a Kea update automatically, however green CI is. A
+      // person decides.
       matchDepNames: ['/^kea-/'],
       automerge: false,
       minimumReleaseAge: '3 days',
@@ -126,12 +125,13 @@
     },
 
     // ---------------------------------------------------------------------
-    // Alpine: automerge digest-only updates. These carry the security fixes
-    // that the weekly rebuild also picks up; getting them pinned explicitly
-    // means the digest in versions.json does not drift from reality.
+    // Alpine: merge digest-only updates automatically. They carry the same
+    // security fixes the weekly rebuild picks up, and pinning them keeps the
+    // digest in versions.json accurate.
     //
-    // A TAG change (3.24 -> 3.25) is a different matter and stays manual: a
-    // new Alpine release can move compiler and library versions under us.
+    // A version change (3.24 -> 3.25) is different, and stays manual: a new
+    // Alpine release can change compiler and library versions under the
+    // build.
     // ---------------------------------------------------------------------
     {
       matchDatasources: ['docker'],
@@ -161,18 +161,18 @@
       minimumReleaseAge: '3 days',
     },
     {
-      // RUNNER IMAGES ARE NOT ACTIONS. Renovate's github-actions manager also
-      // tracks `runs-on:`, and a dry run showed it grouping ubuntu-24.04 ->
-      // newer in with the action SHA bumps - where it would have been
-      // automerged.
+      // Runner images aren't actions. Renovate's github-actions manager also
+      // tracks `runs-on:`, and a dry run showed it grouping a newer ubuntu
+      // runner in with the action updates, where it would have been merged
+      // automatically.
       //
-      // Changing the OS the build runs on is categorically different from
-      // bumping a pinned action: a new runner image moves Docker, buildx and
-      // the toolchain underneath us, and this project depends on
-      // ubuntu-24.04-arm specifically. That is a human decision.
+      // Changing the OS the build runs on is a bigger change than updating an
+      // action: a new runner image changes Docker, buildx and the toolchain,
+      // and this project relies on ubuntu-24.04-arm in particular. So it's a
+      // human decision.
       //
-      // Note the runner is also named in scripts/matrix.py, which Renovate
-      // does not manage - so a bump here would silently desync the two.
+      // The runner is also named in scripts/matrix.py, which Renovate doesn't
+      // manage, so an update here alone would leave the two out of step.
       matchManagers: ['github-actions'],
       matchDepNames: ['ubuntu', 'macos', 'windows'],
       groupName: 'runner images',

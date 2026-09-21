@@ -1,35 +1,36 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Scan the PUBLISHED images for known vulnerabilities and open an issue.
+# Scan the published images for known vulnerabilities, and open an issue if
+# anything turns up.
 #
-# Deliberately scans what is in the registry, not what a build just produced.
-# The question this answers is "is what people are pulling right now
-# exposed?", which a build-time scan cannot answer: the weekly rebuild picks
-# up Alpine fixes, but between rebuilds the published images drift behind and
-# nothing was reporting that.
+# This scans what's in the registry, not what a build just produced, because
+# the question is "is what people are pulling right now affected?". The weekly
+# rebuild picks up Alpine fixes, but between rebuilds the published images
+# fall behind, and nothing was reporting how far.
 #
-# TWO SCANS PER IMAGE, and the second is the one that matters here.
+# Two scans per image, and the second is the important one here:
 #   grype on the image      -> apk packages
 #   grype on the shipped    -> Kea itself, via the CPE in the SPDX document
 #   SPDX document              (D23)
-# Verified: grype scanning an image does NOT read the SBOM document inside
-# it. Against a test image embedding a deliberately old Kea, the image scan
-# found 0 Kea CVEs and the document scan found 3. Kea is built from source,
-# so without the second scan the component most worth watching is invisible.
+# grype doesn't read the SBOM document inside an image when it scans the
+# image. Tested with an image containing a deliberately old Kea: the image
+# scan found 0 Kea CVEs, and the document scan found 3. Kea is built from
+# source, so without the second scan it wouldn't be checked at all.
 #
-# grype rather than trivy, measured: against an SBOM naming Kea 1.4.0, trivy
-# reported nothing and parsed no packages from the document at all, while
-# grype matched CVE-2018-5739, CVE-2019-6472 and CVE-2019-6474.
+# Why grype rather than trivy: against an SBOM naming Kea 1.4.0, trivy
+# reported nothing (it read no packages from the document at all), while
+# grype matched CVE-2018-5739, CVE-2019-6472 and CVE-2019-6474. See D24.
 #
-# Like upstream-watch.yml, an issue is opened for BOTH "found something" and
-# "the check broke". A scanner that silently stops reporting is worse than no
-# scanner, because silence gets read as a clean bill of health.
+# Like upstream-watch.yml, it opens an issue both when it finds something and
+# when the check itself breaks. Otherwise a broken scanner would go quiet, and
+# quiet looks like a clean bill of health.
 name: scan
 
 on:
   schedule:
-    # Daily, offset from the Monday rebuild (04:17), Renovate (05:23) and the
-    # Thursday upstream watcher (06:42) so the four are distinguishable.
+    # Daily, at a different time from the Monday rebuild (04:17), Renovate
+    # (05:23) and the Thursday upstream watcher (06:42), so they're easy to
+    # tell apart.
     - cron: '48 2 * * *'
   workflow_dispatch:
 
@@ -38,9 +39,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  # Pinned by digest, and Renovate keeps it current, so a scan cannot start
-  # silently using a different tool than the one these findings were tuned
-  # against.
+  # Pinned by digest (Renovate keeps it up to date), so the scan can't quietly
+  # switch to a different version of the tool.
   GRYPE: anchore/grype:v0.119.0@sha256:8c2c9234a345577a6d321a4753aa3ee1276d8975c8452d2344a56b57733ecad3
 
 jobs:
@@ -60,10 +60,10 @@ jobs:
           set -uo pipefail
           mkdir -p /tmp/scan
           args=()
-          # Collects why any target could not be scanned. Passed to
-          # --partial, which banners the report and forces the broken exit
-          # code even if other targets reported findings - a coverage gap
-          # must not be filed under "vulnerabilities found".
+          # Collects the reason any image couldn't be scanned. It's passed to
+          # --partial, which puts a banner on the report and reports the run
+          # as broken even if other images had findings, so a gap in coverage
+          # isn't filed under "vulnerabilities found".
           broken=""
 
           for branch in $(python3 -c "import json;print(' '.join(json.load(open('versions.json'))['branches']))"); do
@@ -84,9 +84,9 @@ jobs:
               doc="/tmp/scan/${img}-${branch}-kea.spdx.json"
               if docker run --rm --entrypoint cat "$ref" \
                    /usr/share/sbom/kea.spdx.json > "$doc" 2>/dev/null; then
-                # Validate before scanning. A document grype cannot read
-                # yields zero findings, which is indistinguishable from good
-                # news - the exact failure this whole workflow guards against.
+                # Check the document before scanning it. A document grype
+                # can't read gives zero findings, which looks exactly like
+                # good news.
                 if ./test/check-sbom-doc.py "$kea" < "$doc" >/dev/null; then
                   if ! docker run --rm -v /tmp/grype-db:/.cache -v "$doc:/kea.spdx.json:ro" \
                          "$GRYPE" "sbom:/kea.spdx.json" -o json -q \

@@ -2,48 +2,49 @@
 # SPDX-License-Identifier: MPL-2.0
 """Detect changes in the set of Kea branches ISC currently supports.
 
-WHY THIS EXISTS
+Why this exists
     Renovate tracks versions but knows nothing about ISC's support policy. It
-    will happily bump 3.2.0 -> 3.2.1 forever and never tell us that 3.4 has
-    appeared or that 3.0 has reached EOL. That gap is what this closes.
+    would keep offering 3.2.0 -> 3.2.1 and never mention that 3.4 has
+    appeared, or that 3.0 has reached end of life. This fills that gap.
 
-WHAT IT WATCHES
-    https://downloads.isc.org/isc/kea/cur/ - an Apache directory index listing
-    one directory per branch ISC currently maintains. This is deliberately NOT
-    the isc.org/kea marketing page: an autoindex is structurally stable, while
-    a marketing page is restyled whenever someone feels like it.
+What it watches
+    https://downloads.isc.org/isc/kea/cur/ - a plain directory listing with
+    one directory per branch ISC currently maintains. We read that rather
+    than the isc.org/kea web page, because a directory listing keeps the same
+    structure, while a web page's layout can change at any time.
 
-    Even minor = stable, odd = development. We ship stable only.
+    Even minor versions are stable, odd ones are development. We only build
+    stable ones.
 
-HOW BRITTLE IS IT, HONESTLY
-    Moderately. It depends on two things:
+How fragile is it?
+    Somewhat. It relies on two things:
 
-      1. ISC keeping /isc/kea/cur/ as a browsable directory index.
+      1. ISC keeping /isc/kea/cur/ as a browsable directory listing.
       2. Directory names staying in X.Y form.
 
-    Both have held for years and neither is a presentation choice, so this is
-    considerably sturdier than parsing prose. But it is still scraping, and it
-    WILL break eventually.
+    Both have held for years, and neither is about presentation, so it's much
+    sturdier than reading a web page. But it's still scraping, and one day it
+    will break.
 
-    THE FAILURE MODE IS THE IMPORTANT PART. A scraper that silently stops
-    matching is worse than no scraper, because silence reads as "nothing has
-    changed". So this script treats "I could not parse that" as a loud failure
-    (exit 1), distinct from "the set changed" (exit 2) and "all is well"
-    (exit 0). The workflow opens an issue for BOTH non-zero cases. Silence
-    therefore always means the check ran and genuinely found nothing.
+    So what happens when it breaks matters most. If it stopped matching
+    quietly, silence would look like "nothing changed". Instead, "I couldn't
+    read that" is a clear failure (exit 1), separate from "the set changed"
+    (exit 2) and "all is well" (exit 0), and the workflow opens an issue for
+    both non-zero cases. So silence always means the check ran and found
+    nothing.
 
-WHAT ELSE IT WATCHES
-    The vendored PGP keyblock at build/keys/isc-keyblock.asc. The build gate
-    asserts a GOODSIG status token, so a revoked or expired ISC signing key
-    now stops the build - correctly, but with no warning beforehand. This runs
-    weekly and is the warning: it reports a key that is already revoked or
-    expired, and warns 90 days ahead of an expiry.
+It also checks the signing keys
+    The stored PGP keyblock at build/keys/isc-keyblock.asc. The build requires
+    gpg's GOODSIG status, so a revoked or expired ISC signing key stops the
+    build, which is right, but gives no warning beforehand. This weekly check
+    is the warning: it reports a key that's already revoked or expired, and
+    warns 90 days before one expires.
 
-    As of 2026-09-20 none of the seven keys carries an expiry date, so the
-    90-day warning is inert today. It exists because that is a property of the
-    current block, not a guarantee - a re-vendored block may differ.
+    As of 2026-09-20, none of the seven keys has an expiry date, so the 90-day
+    warning has nothing to do yet. It's there because a future keyblock might
+    be different.
 
-EXIT CODES
+Exit codes
     0  supported set matches versions.json, keyblock healthy
     1  could not determine the upstream set - the check itself is broken
     2  the supported set has changed - human decision needed
@@ -83,8 +84,8 @@ def upstream_branches() -> set[str]:
     html = fetch(CUR_URL)
     found = set(BRANCH_HREF.findall(html))
 
-    # Sanity checks. If the page changed shape we want to KNOW, not to
-    # quietly conclude that ISC supports nothing.
+    # Sanity checks. If the page has changed shape, we want to know, rather
+    # than quietly concluding that ISC supports nothing.
     if not found:
         raise RuntimeError(
             f"no branch directories matched at {CUR_URL}. "
@@ -139,11 +140,12 @@ def keyblock_health() -> tuple[list[str], list[str]]:
     """Inspect the vendored keyblock.
 
     Returns (problems, notes). A non-empty problems list means a key is
-    revoked, expired, or expiring within EXPIRY_WARN_DAYS - all of which need
-    a human, because re-vendoring the block is deliberately a manual act.
+    revoked, expired, or expiring within EXPIRY_WARN_DAYS. Each needs a
+    person, because updating the stored block is deliberately done by hand.
 
-    Raises RuntimeError if the block cannot be read at all, which is a broken
-    check rather than a finding: it must be loud, not silently "healthy".
+    Raises RuntimeError if the block can't be read at all. That's a broken
+    check rather than a finding, so it should be reported, not treated as
+    "healthy".
     """
     if not KEYBLOCK.is_file():
         raise RuntimeError(f"vendored keyblock missing: {KEYBLOCK}")
@@ -210,8 +212,8 @@ def keyblock_health() -> tuple[list[str], list[str]]:
 def main() -> int:
     configured = set(json.loads(VERSIONS.read_text())["branches"])
 
-    # Keyblock first: it is cheap, local, and a revoked signing key matters
-    # more than a branch-set change. A failure to inspect it at all is a
+    # The keyblock first: it's quick, local, and a revoked signing key
+    # matters more than a branch change. Failing to read it at all is a
     # broken check (exit 1), not a clean bill of health.
     try:
         key_problems, key_notes = keyblock_health()
@@ -295,8 +297,8 @@ def main() -> int:
               "see ISC's support policy, only version numbers._"]
     report = "\n".join(lines) + "\n"
     if key_problems:
-        # Both fired in the same week. Report both in one issue rather than
-        # dropping one, and return the more severe code.
+        # Both came up in the same week. Report both in one issue, rather
+        # than dropping one, and return the more serious code.
         report += "\n" + keyblock_report(key_problems)
     pathlib.Path("upstream-report.md").write_text(report)
     print("\n" + report)
@@ -306,10 +308,10 @@ def main() -> int:
 def check_keyblock_only(path: str | None) -> int:
     """`--check-keyblock [PATH]`: inspect a keyblock and nothing else.
 
-    Exists so the keyblock check is runnable on its own - after re-vendoring,
-    and by test/verify-signature-test.sh against deliberately revoked and
-    expired fixtures. A weekly warning that has never been shown to fire is
-    not a warning.
+    So the keyblock check can run on its own: after updating the stored
+    block, and from test/verify-signature-test.sh against deliberately
+    revoked and expired keys. That's how we know the weekly warning actually
+    fires.
     """
     global KEYBLOCK
     if path:

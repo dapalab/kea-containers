@@ -4,10 +4,11 @@
 
 Unofficial community-built container images for ISC Kea DHCP.
 
-**These images are not published, affiliated with, or endorsed by Internet
-Systems Consortium.** ISC publishes its own official Kea images; see
-<https://cloudsmith.io/~isc/repos/docker/packages/>. Support requests for these
-images belong in this repository's issue tracker, never with ISC.
+**These images are not published by, affiliated with, or endorsed by
+Internet Systems Consortium.** ISC publishes its own official Kea images; see
+<https://cloudsmith.io/~isc/repos/docker/packages/>. For help with these
+images, please use this repository's issue tracker rather than contacting
+ISC.
 
 The name "Kea" and "ISC" are used solely to identify the upstream software
 these images contain.

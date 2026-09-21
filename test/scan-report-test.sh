@@ -3,15 +3,14 @@
 #
 # Tests for scripts/scan-report.py.
 #
-# Most days this script's job is to say nothing, so the case that matters is
-# telling "ran and found nothing" apart from "errored and produced nothing".
-# A scanner that silently stops reporting is worse than no scanner, because
-# silence is read as a clean bill of health - the same principle as
-# upstream-watch.yml.
+# Most days this script's job is to say nothing, so what matters most is
+# telling "ran and found nothing" apart from "failed and produced nothing".
+# Otherwise a broken scanner would go quiet, and quiet looks like a clean
+# bill of health (the same idea as upstream-watch.yml).
 #
-# Fixtures are inline rather than recorded from a live scan: a recorded one
-# would go stale as the vulnerability database moves, and these tests are
-# about the reporting logic, not about grype's findings.
+# The fixtures are written inline rather than recorded from a real scan. A
+# recorded one would go stale as the vulnerability database changes, and
+# these tests are about the reporting, not grype's findings.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,7 +71,7 @@ if grep -q 'CVE-0000-2' "$WORK/out.md"; then
 fi
 pass "report contains exactly the at-or-above findings"
 
-# Critical must sort above High, so the worst thing is read first.
+# Critical should sort above High, so the worst thing is read first.
 crit_line="$(grep -n 'CVE-0000-1' "$WORK/out.md" | cut -d: -f1)"
 high_line="$(grep -n 'CVE-0000-0' "$WORK/out.md" | cut -d: -f1)"
 [ "$crit_line" -lt "$high_line" ] || fail "Critical is listed below High"
@@ -81,8 +80,8 @@ pass "Critical sorts above High"
 ###############################################################################
 info "The threshold is honoured"
 ###############################################################################
-# hits.json also contains a Critical, so raise the threshold against a file
-# that holds only a High - otherwise this would pass for the wrong reason.
+# hits.json also has a Critical, so test the raised threshold against a file
+# with only a High; otherwise this could pass for the wrong reason.
 grype_json High > "$WORK/highonly.json"
 run 0 "threshold Critical hides a High" -- "img:tag=$WORK/highonly.json" --threshold Critical
 run 2 "threshold High catches that same High" -- "img:tag=$WORK/highonly.json"
@@ -92,8 +91,8 @@ run 2 "threshold Medium catches a Medium" -- "img:tag=$WORK/med.json" --threshol
 ###############################################################################
 info "A BROKEN scan is exit 1 and never looks clean"
 ###############################################################################
-# This is the whole point. Each of these once had to be distinguishable from
-# "nothing found", and exit 0 here would file the failure under good news.
+# The most important cases. Each of these has to look different from
+# "nothing found"; exit 0 here would file a failure as good news.
 echo 'not json'                      > "$WORK/bad1.json"
 echo '{"no_matches_key": true}'      > "$WORK/bad2.json"
 echo '{"matches":[],"descriptor":{"name":"trivy"}}' > "$WORK/bad3.json"
@@ -110,16 +109,16 @@ run 1 "malformed argument"        -- "no-equals-sign"
 ###############################################################################
 info "One broken target poisons the whole run, rather than being averaged away"
 ###############################################################################
-# A per-target failure must not be hidden by other targets reporting clean.
+# One image failing to scan shouldn't be hidden by others scanning clean.
 run 1 "clean target + broken target" -- \
   "good=$WORK/clean.json" "broken=$WORK/bad1.json"
 
 ###############################################################################
 info "A partial scan outranks findings, rather than hiding behind them"
 ###############################################################################
-# The failure this guards: one image cannot be scanned, another image happens
-# to have findings, and the run is filed as "vulnerabilities found" - so the
-# coverage gap goes unmentioned precisely because something else was reported.
+# What this guards against: one image can't be scanned, another happens to
+# have findings, and the run is filed as "vulnerabilities found", so the gap
+# in coverage goes unmentioned just because something else was reported.
 run 1 "partial + findings -> broken, not 'found'" -- \
   "img:tag=$WORK/hits.json" --partial "kea-dhcp6:3.2 could not be scanned"
 grep -q 'scan was incomplete' "$WORK/out.md" \

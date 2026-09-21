@@ -3,9 +3,9 @@
 """Validate the SPDX document an image ships, against the version it claims.
 
 Reads the document on stdin; argv[1] is the Kea version the image should be.
-A separate file rather than an inline `python3 -c` inside the shell function:
-the inline version needed nested quote escaping, got it wrong, and the error
-was invisible because stderr was discarded.
+It's a separate file rather than an inline `python3 -c` in the shell
+function: the inline version needed nested quoting, got it wrong, and the
+error was hidden because stderr was thrown away.
 """
 import json
 import sys

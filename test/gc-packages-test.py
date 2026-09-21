@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Tests for scripts/gc-packages.py - the only script here that destroys
-published artifacts, and so the one that most needs to have failed for the
-right reason in front of someone.
+"""Tests for scripts/gc-packages.py: the one script here that deletes
+published images, so the one that most needs tests we've seen fail for the
+right reasons.
 
-The fakes sit at the transport layer - urllib.request.urlopen for the
-registry, subprocess.run for gh - rather than replacing tag_list() and
-gh_json(). Stubbing those functions would test the planner against a tag
-list that is complete by construction, and the pagination defect this suite
-exists to catch lives inside tag_list() itself.
+The fakes replace the network layer (urllib.request.urlopen for the
+registry, subprocess.run for gh) rather than tag_list() and gh_json().
+Replacing those functions would hand the collector a complete tag list every
+time, and the pagination bug this suite was written to catch was inside
+tag_list() itself.
 
 The fake registry paginates tags/list the way GHCR does, checked against the
 live registry on 2026-09-20: `?n=5` returns five tags and
@@ -22,9 +22,9 @@ Signatures are modelled as they are on the live registry (measured
 tagged `sha256-<hex>` listing an untagged Sigstore bundle manifest whose
 `subject` is the signed digest. See D25.
 
-The measure of every case is the DELETE calls the script actually issued,
-not what it printed. A plan that looks right and a registry that is
-destroyed are compatible; only the calls tell them apart.
+Every case is judged by the DELETE calls the script actually made, not by
+what it printed. A plan can look right while the calls do something else, so
+the calls are what count.
 """
 import contextlib
 import datetime
@@ -214,7 +214,7 @@ def load():
     """Compiled from source every time. importlib would reuse a cached .pyc
     whose recorded mtime (to the second) and size match - so an edit of the
     same length within the same second runs the OLD code. That made one
-    mutation-test result a lie before this was fixed."""
+    mutation-test result wrong before this was fixed."""
     mod = types.ModuleType("gc_packages")
     mod.__file__ = str(SCRIPT)
     exec(compile(SCRIPT.read_text(), str(SCRIPT), "exec"), mod.__dict__)
@@ -358,7 +358,7 @@ def signature_of_a_kept_subject_is_kept():
 
 @case
 def signature_of_a_deleted_subject_goes_with_it():
-    """A signature is tagged, so reachability alone would keep it forever -
+    """A signature is tagged, so reachability alone would keep it forever,
     pointing at nothing. The bundle under it goes too."""
     reg = healthy()
     sig = reg.sign(reg.orphan[0])
@@ -421,8 +421,8 @@ def unparseable_link_header_aborts():
 
 @case
 def unresolvable_signature_tag_aborts():
-    """The old code skipped these silently. A signature tag that will not
-    resolve for a doomed subject means the plan is incomplete."""
+    """The old code skipped these silently. If a signature tag for an image
+    being deleted can't be read, the plan is incomplete."""
     reg = healthy()
     sig = reg.sign(reg.orphan[0])
     fail_manifest(reg, f"sha256-{reg.orphan[0].split(':')[1]}")
@@ -433,8 +433,8 @@ def unresolvable_signature_tag_aborts():
 
 @case
 def over_the_delete_fraction_aborts():
-    """Most of the package unreachable means the walk broke, not that the
-    package is full of garbage."""
+    """If most of the package looks unreachable, the walk probably went
+    wrong; the package isn't likely to be mostly garbage."""
     reg = healthy()
     limit = load().MAX_DELETE_FRACTION
     must(0 < limit < 1, f"MAX_DELETE_FRACTION = {limit} is not a guard")
@@ -528,7 +528,7 @@ def grace_period_boundary_and_override():
 
 @case
 def young_index_keeps_what_it_points_at():
-    """A young index can point at OLDER manifests - identical bytes are
+    """A young index can point at older manifests - identical bytes are
     reused across builds. Exempting only the young version itself would
     delete its contents out from under it."""
     reg = healthy()
@@ -559,7 +559,7 @@ def negative_min_age_is_rejected():
 
 @case
 def dry_run_is_the_default():
-    """'Dry run by default' is a claim. Claims in this repo get tested."""
+    """"Dry run by default" is a promise, so it gets a test too."""
     reg = healthy()
     code, out, err = run(reg)
     must(reg.deleted == [], f"deleted {len(reg.deleted)} versions without --delete")

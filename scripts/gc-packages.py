@@ -1,68 +1,66 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Delete unreachable GHCR package versions - safely.
+"""Delete GHCR package versions that nothing uses any more - safely.
 
-WHY THIS IS NOT "DELETE UNTAGGED"
+Why not just "delete untagged versions"?
 
-    Every off-the-shelf GHCR cleanup action offers "delete untagged versions"
-    and it would destroy this registry. A multi-arch image is an INDEX; the
-    per-architecture manifests underneath it, and the SBOM/provenance
-    attestation manifests beside them, are all untagged package versions that
-    the index points at.
+    Most GHCR cleanup actions offer "delete untagged versions", and here it
+    would break every image. A multi-arch image is an index; the images for
+    each architecture, and the SBOM/provenance attestations next to them, are
+    all untagged package versions that the index points at.
 
-    Measured on 2026-09-20, before any cleanup existed:
+    Measured on 2026-09-20, before any cleanup:
 
         kea-dhcp4: 136 versions, 94 untagged
-                   48 of those 94 were live children of a working tag
+                   48 of those 94 were in use under a working tag
 
-    Roughly half. Deleting "untagged" would have broken every published
-    image. See docs/DECISIONS.md D17.
+    About half. Deleting "untagged" would have broken every published image.
+    See docs/DECISIONS.md D17.
 
-WHAT THIS DOES INSTEAD
+What this does instead
 
-    Computes reachability. A version is KEPT if it is:
+    It works out what's reachable. A version is kept if it's:
 
       - tagged, or
-      - referenced by the index of anything that is kept, or
-      - a cosign signature / attestation for something that is kept.
+      - referred to by an index that's kept, or
+      - a cosign signature for something that's kept, or
+      - younger than the grace period (see below).
 
-    Everything else is genuinely orphaned: the remains of an earlier build
-    whose tags have since moved on. Those are what it deletes.
+    Everything else is left over from an earlier build whose tags have moved
+    on, and that's what it deletes.
 
-SIGNATURES ARE PAIRED WITH WHAT THEY SIGN
+Signatures go with the image they sign
 
-    cosign finds a signature through a TAG named after its subject. GHCR has
-    no Referrers API, so cosign's bundle format falls back to an index tagged
-    `sha256-<hex>`, listing an untagged bundle manifest. (The older format
-    tagged `sha256-<hex>.sig` directly; both are recognised.) See D25.
+    cosign finds a signature through a tag named after the image it signs.
+    GHCR has no Referrers API, so cosign stores a tagged index,
+    `sha256-<hex>`, listing an untagged bundle. (The older format tagged
+    `sha256-<hex>.sig` directly; both are recognised.) See D25.
 
-    A signature tag is only walked if its subject is kept. Deleting a
-    superseded index without its signature would leave a tagged signature
-    pointing at nothing, so a signature whose subject is being deleted goes
-    with it - the tagged index and the bundle underneath.
+    A signature is only kept if the image it signs is kept. Otherwise an old
+    signature would be left pointing at nothing, so it's deleted along with
+    its image: both the tagged index and the bundle under it.
 
-THE TAG LIST HAS TO BE COMPLETE
+The tag list has to be complete
 
-    The registry pages tags/list. A tag the walk never sees cannot protect
-    its digest, so a short list does not make this do less work - it makes
-    it delete live images, and in amounts the fraction guard below does not
-    catch. So every page is followed, and the result is checked against the
-    tags GitHub's package API reports; if the two disagree, nothing is
+    The registry returns tags/list in pages. A tag the walk never sees can't
+    protect its image, so a short list doesn't make this do less; it makes
+    it delete images that are still in use, in amounts the size limit below
+    might not catch. So every page is read, and the result is compared with
+    the tags GitHub's package API reports. If they disagree, nothing is
     planned at all. See D26.
 
-NOTHING YOUNGER THAN THE GRACE PERIOD
+A grace period
 
     Someone may have pinned a digest while it was still tagged. So a version
     younger than --min-age days (default 90) is kept even if nothing points
-    at it any more - and it counts as a starting point for the walk, so
-    whatever it refers to, and its signatures, are kept with it. See D17.
+    at it any more. It also counts as a starting point for the walk, so
+    whatever it refers to, and its signatures, are kept too. See D17.
 
-DRY RUN BY DEFAULT
+A dry run by default
 
-    Deletions cannot be undone and the failure mode is every published image
-    breaking at once. So this prints what it would do and changes nothing
-    unless given --delete, and it refuses outright if its own safety checks
-    do not hold.
+    Deletions can't be undone, and a mistake could break every published
+    image at once. So it only prints what it would do unless you pass
+    --delete, and it refuses to run at all if its own safety checks fail.
 """
 import argparse
 import datetime
@@ -82,14 +80,14 @@ ACCEPT = ",".join([
     "application/vnd.docker.distribution.manifest.v2+json",
 ])
 SIG_TAG = re.compile(r"^sha256-([0-9a-f]{64})(?:\.(?:sig|att|sbom))?$")
-# Refuse to delete more than this share of a package in one run. In steady
-# state a build leaves four per-arch wrapper indexes per package among ~26
-# new versions, so a correct run removes well under this; wanting to remove
-# more means the reachability walk failed, not that there is a lot of
-# garbage. --max-fraction raises it for one deliberate run (D26).
+# Refuse to delete more than this share of a package in one run. Normally a
+# build leaves four per-arch wrapper indexes per package among about 26 new
+# versions, so a correct run removes far less than this. Wanting to remove
+# more suggests the reachability walk went wrong. --max-fraction raises it
+# for one deliberate run (D26).
 MAX_DELETE_FRACTION = 0.25
-# Keep anything younger than this, reachable or not: a digest someone pinned
-# while it was tagged should survive at least a quarter. D17.
+# Keep anything younger than this, reachable or not, so a digest someone
+# pinned while it was tagged survives at least three months. D17.
 MIN_AGE_DAYS = 90
 
 
@@ -110,8 +108,8 @@ def build_in_flight():
          "--json", "status,databaseId"],
         capture_output=True, text=True)
     if r.returncode != 0:
-        # Cannot tell - treat as in flight. Failing closed costs a rerun;
-        # failing open can cost the registry.
+        # Can't tell, so assume a build is running. Being wrong this way costs
+        # a rerun; being wrong the other way could cost the registry.
         raise RuntimeError(f"could not check for running builds: {r.stderr.strip()}")
     runs = json.loads(r.stdout or "[]")
     live = [x["databaseId"] for x in runs
@@ -124,7 +122,8 @@ def gh_json(path):
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"gh api {path} failed: {r.stderr.strip()}")
-    # --paginate concatenates JSON arrays as "][", stitch them back together
+    # --paginate prints each page's JSON array back to back ("]["), so join
+    # them into one
     return json.loads(r.stdout.replace("][", ","))
 
 
@@ -211,8 +210,8 @@ def plan(owner, pkg, min_age_days=MIN_AGE_DAYS):
     versions = gh_json(f"user/packages/container/{pkg}/versions?per_page=100")
     by_digest = {v["name"]: v for v in versions}
 
-    # Two independent accounts of what is tagged. If they disagree, one of
-    # them is incomplete, and that is exactly when nothing should be deleted.
+    # Two independent lists of what's tagged. If they disagree, one of them is
+    # incomplete, and that's exactly when nothing should be deleted.
     gh_tags = {t for v in versions for t in v["metadata"]["container"]["tags"]}
     if set(tags) != gh_tags:
         only_reg = sorted(set(tags) - gh_tags)
@@ -221,11 +220,11 @@ def plan(owner, pkg, min_age_days=MIN_AGE_DAYS):
             f"{pkg}: registry lists {len(set(tags))} tags, GitHub {len(gh_tags)} - refusing. "
             f"Only in registry: {only_reg[:3]}; only in GitHub: {only_gh[:3]}")
 
-    # Signatures are walked only for subjects that survive; see the header.
+    # Signatures are only walked for images that are kept; see the top.
     sigs = {t: "sha256:" + m.group(1) for t in tags if (m := SIG_TAG.match(t))}
     keep = reachable_from(owner, pkg, token, [t for t in tags if t not in sigs])
-    # Young versions are roots too, not just exemptions: a young index may
-    # point at older manifests, and those have to survive with it.
+    # Young versions are starting points for the walk, not just exceptions:
+    # a young index may point at older manifests, which need to stay too.
     cutoff = utcnow() - datetime.timedelta(days=min_age_days)
     young = [d for d, v in by_digest.items() if created(v) > cutoff]
     keep |= reachable_from(owner, pkg, token, young)
@@ -249,8 +248,8 @@ def plan(owner, pkg, min_age_days=MIN_AGE_DAYS):
             delete.append((v, f"signature for {doomed[digest][:19]}… (being deleted)"))
             continue
         if v["metadata"]["container"]["tags"]:
-            # Tagged but unreachable: the tag moved while this ran, most
-            # likely. Never delete it.
+            # Tagged but unreachable: most likely the tag moved while this
+            # was running. Never delete it.
             continue
         delete.append((v, "unreachable from any tag"))
 
@@ -275,7 +274,7 @@ def main():
     if a.min_age < 0:
         ap.error(f"--min-age cannot be negative, got {a.min_age}")
     if not 0 < a.max_fraction < 1:
-        # 1 or more is not a larger limit, it is no guard at all.
+        # 1 or more wouldn't be a bigger limit, it would be no limit at all.
         ap.error(f"--max-fraction must be between 0 and 1, got {a.max_fraction}")
 
     try:

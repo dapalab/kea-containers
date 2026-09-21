@@ -3,22 +3,24 @@
 # Self-hosted Renovate.
 #
 # Runs as a GitHub App rather than with GITHUB_TOKEN, for a practical reason
-# as much as a security one: pull requests opened with GITHUB_TOKEN do not
-# trigger other workflows. A Renovate PR bumping Kea would therefore never
-# have build.yml run against it, which defeats the point of proposing it.
-# An App token is not GITHUB_TOKEN, so that restriction does not apply and
-# every Renovate PR gets the full multi-arch build and smoke test.
+# as much as a security one: pull requests opened with GITHUB_TOKEN don't
+# trigger other workflows. So a Renovate PR bumping Kea would never have
+# build.yml run against it, and the update would arrive untested. An App token
+# isn't GITHUB_TOKEN, so every Renovate PR gets the full multi-arch build and
+# smoke tests.
 #
-# The App token is minted per run and expires in an hour; only the private key
-# is stored. The App needs Contents, Pull requests and Issues write - and also
-# Workflows write, because Renovate edits .github/workflows/*.yml to bump the
-# SHA-pinned actions. That last one is easy to miss and fails confusingly.
+# The App token is created for each run and expires within an hour; only the
+# private key is stored. The App needs write access to Contents, Pull requests
+# and Issues, and also to Workflows, because Renovate edits
+# .github/workflows/*.yml to update pinned actions. That last one is easy to
+# miss, and the error it gives is confusing. See D16.
 name: renovate
 
 on:
   schedule:
-    # Daily, deliberately offset from the Monday rebuild (04:17) and the
-    # Thursday upstream watcher (06:42) so the three are distinguishable.
+    # Daily, at a different time from the other scheduled jobs (the scan at
+    # 02:48, the Monday rebuild at 04:17 and the Thursday upstream watcher at
+    # 06:42), so they're easy to tell apart.
     - cron: '23 5 * * *'
   workflow_dispatch:
     inputs:
@@ -44,8 +46,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      # Fail with a readable message rather than letting Renovate die with
-      # something opaque about authentication.
+      # Fail with a clear message, rather than letting Renovate fail with
+      # something cryptic about authentication.
       - name: Check the App credentials are configured
         env:
           APP_ID: ${{ secrets.RENOVATE_APP_CLIENT_ID }}
@@ -65,9 +67,9 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          # client-id, not app-id: the action deprecated app-id, and a Client
-          # ID (Iv23li...) cannot be confused with an Installation ID the way
-          # a bare numeric App ID can.
+          # client-id rather than app-id: the action has deprecated app-id,
+          # and a Client ID (Iv23li...) can't be mixed up with an Installation
+          # ID the way a plain numeric App ID can.
           client-id: ${{ secrets.RENOVATE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
 
@@ -81,10 +83,10 @@ jobs:
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_DRY_RUN: ${{ inputs.dryRun && 'full' || '' }}
-          # Commits are attributed to the App's bot account, not to a human.
+          # Commits are credited to the App's bot account, not to a person.
           #
           # The numeric prefix is what makes GitHub link the commit to the bot:
-          # <bot-user-id>+<app-slug>[bot]@users.noreply.github.com. Without it
+          # <bot-user-id>+<app-slug>[bot]@users.noreply.github.com. Without it,
           # the PR comes from the bot but its commits show an unlinked author.
           # Find the id with: gh api '/users/<app-slug>[bot]' --jq .id
           RENOVATE_GIT_AUTHOR: 'kea-containers-renovate[bot] <331638593+kea-containers-renovate[bot]@users.noreply.github.com>'
