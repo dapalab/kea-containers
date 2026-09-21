@@ -50,6 +50,13 @@ THE TAG LIST HAS TO BE COMPLETE
     tags GitHub's package API reports; if the two disagree, nothing is
     planned at all. See D26.
 
+NOTHING YOUNGER THAN THE GRACE PERIOD
+
+    Someone may have pinned a digest while it was still tagged. So a version
+    younger than --min-age days (default 90) is kept even if nothing points
+    at it any more - and it counts as a starting point for the walk, so
+    whatever it refers to, and its signatures, are kept with it. See D17.
+
 DRY RUN BY DEFAULT
 
     Deletions cannot be undone and the failure mode is every published image
@@ -58,6 +65,7 @@ DRY RUN BY DEFAULT
     do not hold.
 """
 import argparse
+import datetime
 import json
 import re
 import subprocess
@@ -80,6 +88,13 @@ SIG_TAG = re.compile(r"^sha256-([0-9a-f]{64})(?:\.(?:sig|att|sbom))?$")
 # more means the reachability walk failed, not that there is a lot of
 # garbage. --max-fraction raises it for one deliberate run (D26).
 MAX_DELETE_FRACTION = 0.25
+# Keep anything younger than this, reachable or not: a digest someone pinned
+# while it was tagged should survive at least a quarter. D17.
+MIN_AGE_DAYS = 90
+
+
+def utcnow():
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def build_in_flight():
@@ -183,7 +198,11 @@ def reachable_from(owner, pkg, token, tags):
     return found
 
 
-def plan(owner, pkg):
+def created(version):
+    return datetime.datetime.fromisoformat(version["created_at"].replace("Z", "+00:00"))
+
+
+def plan(owner, pkg, min_age_days=MIN_AGE_DAYS):
     token = registry_token(owner, pkg)
     tags = tag_list(owner, pkg, token)
     if not tags:
@@ -205,6 +224,11 @@ def plan(owner, pkg):
     # Signatures are walked only for subjects that survive; see the header.
     sigs = {t: "sha256:" + m.group(1) for t in tags if (m := SIG_TAG.match(t))}
     keep = reachable_from(owner, pkg, token, [t for t in tags if t not in sigs])
+    # Young versions are roots too, not just exemptions: a young index may
+    # point at older manifests, and those have to survive with it.
+    cutoff = utcnow() - datetime.timedelta(days=min_age_days)
+    young = [d for d, v in by_digest.items() if created(v) > cutoff]
+    keep |= reachable_from(owner, pkg, token, young)
     keep |= reachable_from(owner, pkg, token, [t for t, subj in sigs.items() if subj in keep])
 
     doomed = {}
@@ -240,11 +264,16 @@ def main():
     ap.add_argument("packages", nargs="+", help="package names, e.g. kea-dhcp4")
     ap.add_argument("--delete", action="store_true",
                     help="actually delete (default: dry run, changes nothing)")
+    ap.add_argument("--min-age", type=int, default=MIN_AGE_DAYS, metavar="DAYS",
+                    help=f"keep every version younger than this, reachable or "
+                         f"not (default {MIN_AGE_DAYS}; 0 turns it off)")
     ap.add_argument("--max-fraction", type=float, default=MAX_DELETE_FRACTION,
                     metavar="F",
                     help=f"refuse to delete more than this share of a package "
                          f"(default {MAX_DELETE_FRACTION}; must be below 1)")
     a = ap.parse_args()
+    if a.min_age < 0:
+        ap.error(f"--min-age cannot be negative, got {a.min_age}")
     if not 0 < a.max_fraction < 1:
         # 1 or more is not a larger limit, it is no guard at all.
         ap.error(f"--max-fraction must be between 0 and 1, got {a.max_fraction}")
@@ -266,7 +295,7 @@ def main():
     failures = []
     for pkg in a.packages:
         try:
-            by_digest, keep, delete = plan(a.owner, pkg)
+            by_digest, keep, delete = plan(a.owner, pkg, a.min_age)
         except (RuntimeError, urllib.error.URLError) as e:
             print(f"=== {pkg} ===\n  ERROR: {e}", file=sys.stderr)
             failures.append(pkg)

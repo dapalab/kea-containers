@@ -27,6 +27,7 @@ not what it printed. A plan that looks right and a registry that is
 destroyed are compatible; only the calls tell them apart.
 """
 import contextlib
+import datetime
 import email.message
 import hashlib
 import io
@@ -43,6 +44,11 @@ from unittest import mock
 SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "gc-packages.py"
 PKG = "kea-dhcp4"
 OWNER = "dapalab"
+
+# Every run happens at this moment, so ages are exact. Versions are OLD
+# unless a case says otherwise - past the default grace period by a margin.
+NOW = datetime.datetime(2026, 9, 21, 12, 0, tzinfo=datetime.timezone.utc)
+OLD = 365
 
 INDEX = "application/vnd.oci.image.index.v1+json"
 IMAGE = "application/vnd.oci.image.manifest.v1+json"
@@ -69,6 +75,7 @@ class Registry:
         self.run_list_fails = False
         self.deleted = []        # version ids gh was asked to DELETE
         self.ids = {}            # digest -> version id
+        self.age = {}            # digest -> age in days (default OLD)
 
     # -- building fixtures -------------------------------------------------
     def _add(self, name, body):
@@ -115,7 +122,9 @@ class Registry:
         for d in self.manifests:
             tags = [t for t, td in self.tags.items()
                     if self.gh_tag_on.get(t, td) == d]
+            made = NOW - datetime.timedelta(days=self.age.get(d, OLD))
             out.append({"id": self.ids[d], "name": d,
+                        "created_at": made.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "metadata": {"container": {"tags": tags}}})
         return out
 
@@ -215,6 +224,7 @@ def load():
 def run(reg, *args):
     """Run main() against the fakes. Returns (exit code, stdout, stderr)."""
     mod = load()
+    mod.utcnow = lambda: NOW
     out, err = io.StringIO(), io.StringIO()
     argv = ["gc-packages.py", "--owner", OWNER, PKG, *args]
     with mock.patch.object(sys, "argv", argv), \
@@ -474,6 +484,77 @@ def override_cannot_switch_the_guard_off():
         code, out, err = run(reg, "--delete", "--max-fraction", bad)
         must(reg.deleted == [], f"--max-fraction {bad} deleted {len(reg.deleted)} versions")
         must(code != 0, f"--max-fraction {bad} was accepted")
+
+
+@case
+def young_orphan_is_kept():
+    """D17's grace period: someone may have pinned it while it was tagged."""
+    reg = healthy()
+    for d in reg.orphan:
+        reg.age[d] = 10
+    code, out, err = run(reg, "--delete")
+    must(reg.deleted == [], f"deleted {len(reg.deleted)} versions only 10 days old")
+    must(code == 0, f"exit {code}: {err.strip()}")
+
+
+@case
+def grace_period_boundary_and_override():
+    """89 days is inside the default grace period and 91 is past it, which
+    pins the default at 90 - D17's promise. --min-age moves the line both
+    ways, and 0 turns it off."""
+    reg = healthy()
+    for d in reg.orphan:
+        reg.age[d] = 89
+    run(reg, "--delete")
+    must(reg.deleted == [], "an 89-day orphan was deleted: the default is under 90")
+    reg = healthy()
+    for d in reg.orphan:
+        reg.age[d] = 91
+    run(reg, "--delete")
+    must(set(reg.deleted) == {reg.id(d) for d in reg.orphan},
+         f"91-day orphan not collected at the default: {sorted(reg.deleted)}")
+    reg = healthy()
+    for d in reg.orphan:
+        reg.age[d] = 91
+    run(reg, "--delete", "--min-age", "120")
+    must(reg.deleted == [], "--min-age 120 did not protect a 91-day orphan")
+    reg = healthy()
+    for d in reg.orphan:
+        reg.age[d] = 1
+    run(reg, "--delete", "--min-age", "0")
+    must(set(reg.deleted) == {reg.id(d) for d in reg.orphan},
+         "--min-age 0 did not turn the grace period off")
+
+
+@case
+def young_index_keeps_what_it_points_at():
+    """A young index can point at OLDER manifests - identical bytes are
+    reused across builds. Exempting only the young version itself would
+    delete its contents out from under it."""
+    reg = healthy()
+    idx, kids = reg.orphan[0], reg.orphan[1:]
+    reg.age[idx] = 5          # the children stay OLD
+    code, out, err = run(reg, "--delete")
+    hit = {reg.id(k) for k in kids} & set(reg.deleted)
+    must(not hit, f"deleted {len(hit)} old children of a young index")
+    must(code == 0, f"exit {code}: {err.strip()}")
+
+
+@case
+def young_image_keeps_its_signature():
+    reg = healthy()
+    sig = reg.sign(reg.orphan[0])
+    reg.age[reg.orphan[0]] = 5
+    code, out, err = run(reg, "--delete")
+    hit = {reg.id(d) for d in sig} & set(reg.deleted)
+    must(not hit, "deleted the signature of an image inside the grace period")
+
+
+@case
+def negative_min_age_is_rejected():
+    reg = healthy()
+    code, out, err = run(reg, "--delete", "--min-age", "-1")
+    must(reg.deleted == [] and code != 0, "--min-age -1 was accepted")
 
 
 @case

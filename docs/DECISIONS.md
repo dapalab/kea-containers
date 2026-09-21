@@ -906,6 +906,20 @@ reasonably have pinned: the per-architecture wrapper indexes each build
 leaves behind (D26). But the gap between what was written here and what the
 code does is recorded honestly rather than quietly removed.
 
+**Then fixed.** The collector now has `--min-age` (default 90 days). A
+version younger than that is kept even if nothing points at it, and it also
+counts as a starting point for the walk, so everything it refers to and its
+signatures are kept too. That second part matters: a young index can point at
+*older* manifests (identical bytes are reused between builds), and exempting
+only the young version would have deleted its contents.
+
+Five tests cover it, including one at 89 days and one at 91, which pins the
+default at exactly 90. Each piece was checked by breaking it: removing the
+grace period, exempting young versions without walking them, inverting the
+cutoff, ignoring `--min-age`, walking signatures before young versions, and
+changing the default to 30 or 120 days were each caught by a named test.
+`--min-age 0` turns it off, for a deliberate clean slate.
+
 ---
 
 ## D18 — Keyless signing
