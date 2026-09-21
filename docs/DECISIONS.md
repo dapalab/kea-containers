@@ -1270,3 +1270,98 @@ could not.
 **Existing signatures are left alone.** Images signed recursively before this
 change keep their extra signatures; they are harmless, and are collected with
 the builds they belong to.
+
+---
+
+## D26 — The package collector: a complete tag list, real signatures, a tighter guard
+
+**Decision.** `scripts/gc-packages.py` follows every page of `tags/list`,
+refuses unless the registry's tags equal GitHub's, recognises the signature
+tags cosign actually writes, and refuses to delete more than 25% of a package
+unless told otherwise for one run. `test/gc-packages-test.py` proves each of
+those in `lint`, with no network.
+
+**The tag list was one request.** The registry pages `tags/list`, and a tag the
+walk never sees cannot protect its digest. So truncation does not make the
+collector do less — it makes it **delete live images**, in amounts the old 50%
+guard did not catch. Probed against GHCR on 2026-09-20 (`kea-dhcp4`):
+
+| Probe | Result |
+|---|---|
+| `Link` header on a default request | none |
+| tag count, registry vs `gh api` | 71 vs 71 |
+| `tags/list?n=5` | 5 tags, and `Link: </v2/dapalab/kea-dhcp4/tags/list?last=3.0-lts&n=5>; rel="next"` |
+
+So pagination is real, the default page happened to hold everything, and the
+tag count grows with every build: a latent bug that would have gone live at
+exactly the point cleanup became worth doing. Now:
+
+- every `rel="next"` is followed (it is a *path*, resolved against the registry)
+- a `Link` header that cannot be parsed, a page that repeats a tag, or more than
+  1000 pages aborts the run rather than returning a partial list
+- the registry's tag set must **equal** the tag set GitHub's package API
+  reports. Sets, not counts: a count can match while the tags differ. Two
+  sources disagreeing about what is live is the one condition under which
+  nothing should be deleted, and it is the only guard that sees a list which is
+  short *without saying so*.
+
+**Signatures were never recognised.** The collector matched
+`sha256-<hex>.sig`. The registry has none: 60 of `kea-dhcp4`'s 71 tags were
+signatures, all `sha256-<hex>` with no suffix (D25). The rule "a signature goes
+with its subject" had never matched anything, so signatures of deleted images
+would have been kept forever. Now both forms are recognised, a signature tag is
+walked **only if its subject is kept**, and a doomed signature takes its
+untagged bundle with it. A signature tag that will not resolve aborts the run;
+the old code skipped it silently.
+
+**What it found.** Dry run on 2026-09-21, after the D25 build:
+
+| | kea-dhcp4 |
+|---|---|
+| versions | 230 |
+| to delete | 118 (51%) |
+| — per-arch wrapper indexes (every build, by design) | 28 |
+| — images, attestations, indexes of the 3 pre-stamp builds | 30 |
+| — signatures of those 3 builds (referrer + bundle) | **60** |
+
+The old collector found 54 on the same registry: the 60 signatures were
+invisible to it. The other four packages match (118/230; ctrl-agent 59/115).
+
+**The guard: 25%, with a bounded one-run override.** The old limit was 0.5
+and the first correct cleanup is 51%. Raising the default to fit it would also
+pass a broken walk of that size on every run. Instead: the default drops to
+**0.25** — in steady state a build leaves four wrapper indexes per package
+among ~26 new versions — and `--max-fraction F` raises it for one deliberate
+run. `F` must be below 1; 1 or more is not a larger limit, it is no guard.
+
+**How the tests were proven.** The suite fakes the transport — `urlopen` for the
+registry, `subprocess.run` for `gh` — not `tag_list()`, because the defect was
+inside `tag_list()`, and stubbing it would have tested a list complete by
+construction. The fake registry pages exactly as the probe above shows. Every
+case is judged by the `DELETE` calls issued, not by what was printed.
+
+Against the unpatched script, the truncation case **deleted 7 live versions**
+and four other cases failed. Then every guard in the fixed script was mutated in
+turn — 21 mutants — and each was killed by a named case. One survivor is
+equivalent: removing the lower bound on `--max-fraction` changes only the error
+message, since a limit of 0 already refuses any plan. A control mutant that
+should survive (limit 0.9, which the fraction case adapts to) did.
+
+The mutation run itself lied twice before it was trustworthy, both worth
+recording:
+
+- it counted "no FAIL lines" as a kill without checking the exit code, so a
+  test run that hung or crashed would have looked like a pass; one did hang
+- the suite loaded the script through `importlib`, which reuses a cached `.pyc`
+  when the source's mtime (to the second) and size match. Two mutants of equal
+  length written within one second ran the *first* mutant's code. The suite
+  now compiles from source on every load
+
+Three guards also survived at first because a *later* guard caught their case —
+the fraction guard caught what the cross-check should have, the cross-check
+caught what the `Link` parser should have. Each now has a case that only it can
+catch, and the pagination guards are also asserted on `tag_list()` alone.
+
+**Still manual, still dry by default.** Nothing schedules this. The first real
+run is a deliberate one: `kea-ctrl-agent` first, then confirm all five images
+still pull and `cosign verify` still passes, then the rest.

@@ -132,6 +132,12 @@ jobs:
       - name: Scan reporter tests
         run: ./test/scan-report-test.sh
 
+      # The package collector is run by hand and deletes published images,
+      # so it is the last script that should be proven only by its first
+      # real run. Fakes the registry and gh; no network, no token.
+      - name: Package collector tests
+        run: ./test/gc-packages-test.py
+
       - name: Validate shipped config templates
         run: ./scripts/validate-configs.py
 
