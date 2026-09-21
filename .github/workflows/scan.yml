@@ -28,10 +28,19 @@ name: scan
 
 on:
   schedule:
-    # Daily, at a different time from the Monday rebuild (04:17), Renovate
-    # (05:23) and the Thursday upstream watcher (06:42), so they're easy to
-    # tell apart.
-    - cron: '48 2 * * *'
+    # Daily, to catch new CVEs in images that haven't changed. After the
+    # Monday rebuild (04:17) and Renovate (05:23) in the schedule, though
+    # GitHub often starts scheduled runs hours late, so the order isn't
+    # guaranteed. The trigger below is what makes sure fresh builds get
+    # scanned.
+    - cron: '53 5 * * *'
+  # After every build on main that published images: the Monday rebuild,
+  # Renovate merges and ordinary pushes. So a scan always follows a publish,
+  # and never reports on images that are about to be replaced.
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -45,6 +54,8 @@ env:
 
 jobs:
   scan:
+    # A failed build published nothing new, so there's nothing new to scan.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
