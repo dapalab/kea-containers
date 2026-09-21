@@ -51,8 +51,8 @@ real high availability, use Kea's HA hook with a shared database. That's
 beyond this example, but the [configuration template](configuration.md) points
 you in the right direction.
 
-**Pin a tag that doesn't move** if you're not using a tool to manage
-updates. The example uses a stamped tag. See [Tags and updates](tags-and-updates.md)
+**Pin a tag that doesn't move** if you're not using a tool to manage updates.
+The example uses a stamped tag. See [Tags and updates](tags-and-updates.md)
 for the options.
 
 ## Other ways to reach the network
