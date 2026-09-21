@@ -837,6 +837,19 @@ the App: **Commit statuses: Read and write**, alongside Contents, Pull
 requests, Issues and Workflows. It's the same pattern this log keeps finding:
 a job that had never been seen to do its job, reporting success.
 
+**Fixed and confirmed the same day.** With the permission added, the next run
+logged `PR created` and finished normally. PR #5 (`renovatebot/github-action`
+v46.3.3) was opened by the Renovate App, passed `required` and merged itself:
+the first dependency update ever to arrive this way.
+
+It merged while `renovate/stability-days` was still pending, because it was
+forced from the dashboard, which skips the release-age wait on purpose. Branch
+protection only requires `required`, so we checked that a normal update can't
+merge early: updates that haven't reached their age are held as
+`pendingChecks`, and Renovate doesn't create their branch until either the
+age passes or someone ticks the box. The un-ticked runner-image update was
+the control: same state, no branch, no PR.
+
 ---
 
 ## D17 — Cleaning up old package versions safely
