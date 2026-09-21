@@ -137,7 +137,7 @@ spec:
         - name: kea-dhcp4
           image: ghcr.io/dapalab/kea-dhcp4:3.2.0-20260920-2244
           # Pin the stamped tag, not 3.2.0 - the version tags move with every
-          # weekly rebuild. See the README's tagging section.
+          # weekly rebuild. See docs/tags-and-updates.md.
           imagePullPolicy: IfNotPresent
 
           securityContext:
