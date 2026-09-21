@@ -1,8 +1,15 @@
-# DHCPv4 + DHCPv6 + DDNS on a macvlan segment.
+# DHCPv4, DHCPv6 and dynamic DNS, with the DHCP servers on a macvlan network.
 #
-# Replace parent, subnets and gateways to match your network. Note that the
-# host cannot reach macvlan containers over that interface by design - use
-# ipvlan, or add a host-side macvlan shim, if you need host access.
+# Change parent, the subnets and the gateways to match your network. The host
+# itself can't reach macvlan containers through that interface (that's how
+# macvlan works). If you need it to, use ipvlan, or add a macvlan "shim"
+# interface on the host.
+#
+# The DHCP servers are also on the "internal" network, so they can send DNS
+# updates to kea-dhcp-ddns at 172.20.0.5. That's the address the templates'
+# commented dhcp-ddns example already uses as "server-ip"; in
+# kea-dhcp-ddns.conf, set "ip-address" to 172.20.0.5 as well. (kea-dhcp-ddns
+# will log DHCP_DDNS_NOT_ON_LOOPBACK as a reminder; that's expected here.)
 services:
   kea-dhcp4:
     image: ghcr.io/dapalab/kea-dhcp4:3.2
@@ -11,6 +18,7 @@ services:
     networks:
       dhcp:
         ipv4_address: 192.168.50.2
+      internal:
     volumes:
       - ./kea-dhcp4.conf:/etc/kea/kea-dhcp4.conf:ro
       - leases4:/var/lib/kea
@@ -22,17 +30,20 @@ services:
     networks:
       dhcp:
         ipv6_address: 2001:db8:1::2
+      internal:
     volumes:
       - ./kea-dhcp6.conf:/etc/kea/kea-dhcp6.conf:ro
       - leases6:/var/lib/kea
 
-  # DDNS needs no special networking - it talks to a DNS server over UDP and
-  # needs no broadcast visibility, so a plain bridge is correct here.
+  # DDNS doesn't need broadcasts: it talks to the DHCP servers and your DNS
+  # server over ordinary UDP, so a plain bridge network is all it needs.
   kea-dhcp-ddns:
     image: ghcr.io/dapalab/kea-dhcp-ddns:3.2
     container_name: kea-dhcp-ddns
     restart: unless-stopped
-    networks: [ internal ]
+    networks:
+      internal:
+        ipv4_address: 172.20.0.5
     volumes:
       - ./kea-dhcp-ddns.conf:/etc/kea/kea-dhcp-ddns.conf:ro
 
@@ -50,6 +61,9 @@ networks:
           gateway: 2001:db8:1::1
   internal:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
 
 volumes:
   leases4:
