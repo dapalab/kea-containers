@@ -376,6 +376,14 @@ than 3.2's (July 2027). Someone choosing `3` for stability would get the
 shorter-lived branch, the opposite of what they wanted. `3` wouldn't say
 anything `3.2` doesn't, and it could mislead.
 
+(Where the dates come from, rechecked 2026-09-21: ISC's download table at
+<https://www.isc.org/kea/> gives 3.2 end of life July 2027 and 3.0 June 2028,
+and the support policy at <https://kb.isc.org/docs/aa-00896> shows 3.2 ending
+in Q2 2027 and 3.0 in Q3 2028. The Kea repository's own `SECURITY.md`
+disagrees, listing 3.2 as "summer 2028"; it looks out of date, since it also
+gives the 3.3 development branch an end date that fits 3.2. We follow the two
+sources that agree.)
+
 **Why no `latest`.** A DHCP server quietly changing major version isn't
 something most people want. ISC does publish `latest`, and it currently
 points at 3.2.0 while 3.0 is the LTS, which is exactly the confusion above.
