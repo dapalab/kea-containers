@@ -107,7 +107,7 @@ build also has a tag that never changes, like `3.2.0-20260920-2244`.
 | [Networking](docs/networking.md) | Getting DHCP traffic to a container: macvlan, host networking, relays |
 | [Configuration](docs/configuration.md) | The config templates, the control API, dynamic DNS with BIND9 |
 | [Tags and updates](docs/tags-and-updates.md) | What each tag means, how rebuilds work, Renovate setup |
-| [Security](docs/security.md) | Non-root and capabilities, verifying signatures, how the build is checked |
+| [Security](docs/image-security.md) | Non-root and capabilities, verifying signatures, how the build is checked |
 | [Kubernetes](docs/kubernetes.md) | Running on a cluster, with a hardened example manifest |
 | [Upgrading](docs/upgrading.md) | Moving between 3.0 and 3.2, including database migrations |
 | [Differences from ISC's images](docs/differences-from-isc.md) | What's different here, and why |

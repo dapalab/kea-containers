@@ -50,7 +50,7 @@ mode `0750`. Kea 3.x won't use a socket directory that other users can read.
 The container can't use the capabilities the server needs. This usually means
 `--cap-drop=ALL` (or `drop: [ALL]` on Kubernetes) without adding them back.
 For `kea-dhcp4`, add back `NET_RAW` and `NET_BIND_SERVICE`; for `kea-dhcp6`,
-just `NET_BIND_SERVICE`. [Security](security.md) has the full table.
+just `NET_BIND_SERVICE`. [Security](image-security.md) has the full table.
 
 ## `docker ps` shows no ports
 

@@ -12,7 +12,7 @@ The rest are deliberate choices, listed here so nothing catches you out:
 
 | | ISC's images | These images | Why |
 |---|---|---|---|
-| **User** | Run as root | Run as user 10000, with only the capabilities they need | Least privilege. See [Security](security.md) |
+| **User** | Run as root | Run as user 10000, with only the capabilities they need | Least privilege. See [Security](image-security.md) |
 | **Default config** | Starts serving `192.168.50.0/24` straight away | Starts with no subnets, so it hands out nothing until you configure it | A new container shouldn't start answering DHCP on your LAN before you've set it up |
 | **API credentials** | Ship a password file containing `api-user-name:api-user-password` | Ship no credentials | Publicly known passwords shouldn't come built in |
 | **HTTP control socket** | On `0.0.0.0:8000` by default | Off by default; the Unix socket is always there | Turn it on when you want it, with your own credentials |
