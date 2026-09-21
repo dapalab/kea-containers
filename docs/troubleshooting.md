@@ -99,6 +99,37 @@ Kea 3.x wants DDNS keys in a file rather than written into the config. Use
 `secret-file` instead of `secret`. The steps are in
 [Configuration](configuration.md#dynamic-dns-with-bind9).
 
+## An image pulled by digest isn't in `docker image ls`
+
+If you pull with a digest, like
+`ghcr.io/dapalab/kea-dhcp4:3.2.0@sha256:80d68…`, Docker may leave the image
+out of `docker image ls`, or list it with the tag `<none>`. The image is
+there; it just has no tag.
+
+A digest identifies the image's exact contents. When a digest is given,
+Docker fetches by digest alone and ignores the tag, even if you typed one, so
+there's no tag to record. (It couldn't pick one anyway: several tags usually
+point at the same digest, such as `3.2.0`, `3.2` and that build's stamped
+tag.) That's also what makes a digest pin reliable: it keeps pointing at the
+same image after `3.2.0` moves on to a newer build.
+
+To see it:
+
+```bash
+docker image ls -a --digests ghcr.io/dapalab/kea-dhcp4
+```
+
+If you'd like it listed by name, give it a tag of your own. The tag only
+exists on your machine and doesn't change what the pin points at:
+
+```bash
+docker tag ghcr.io/dapalab/kea-dhcp4@sha256:<digest> kea-dhcp4:pinned
+```
+
+Keep the tag in your pins even though Docker ignores it (`3.2@sha256:…`
+rather than just `@sha256:…`). It tells people what the digest is, and
+Renovate uses it to know which tag to follow.
+
 ## Renovate never suggests an update
 
 You're probably pinned to a stamped tag like `3.2.0-20260920-2244`.

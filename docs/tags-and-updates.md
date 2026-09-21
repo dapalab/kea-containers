@@ -31,7 +31,10 @@ ghcr.io/dapalab/kea-dhcp4:3.2@sha256:...
 ```
 
 The digest means every deployment is exactly reproducible, and the bot opens a
-pull request whenever there's a new build or a new version. For Renovate:
+pull request whenever there's a new build or a new version. (An image pulled
+this way shows up without a tag in `docker image ls`;
+[Troubleshooting](troubleshooting.md#an-image-pulled-by-digest-isnt-in-docker-image-ls)
+explains why.) For Renovate:
 
 ```json5
 { "packageRules": [{ "matchPackageNames": ["ghcr.io/dapalab/kea-**"],
