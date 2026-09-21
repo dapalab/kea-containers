@@ -78,6 +78,21 @@ damaged: Kea stops before touching anything. Run the schema upgrade with
 `kea-tools`, as described in [Upgrading](upgrading.md). Going back from 3.2
 to 3.0 means restoring a backup, because schemas can't be downgraded.
 
+## "The Kea server has not been compiled with" MySQL or PostgreSQL
+
+It has been, and this message is misleading. In Kea 3.x each database backend
+is a hook library, and this is what Kea says when the hook isn't loaded. Add
+it to your config alongside the `lease-database` settings:
+
+```json
+"hooks-libraries": [
+  { "library": "/usr/lib/kea/hooks/libdhcp_mysql.so" }
+],
+```
+
+For PostgreSQL, use `libdhcp_pgsql.so`. There's a full example in
+[Configuration](configuration.md#using-a-database-for-leases).
+
 ## `use of clear text TSIG 'secret' is NOT SECURE`
 
 Kea 3.x wants DDNS keys in a file rather than written into the config. Use

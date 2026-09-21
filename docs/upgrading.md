@@ -163,21 +163,13 @@ that line.
 ## Keeping passwords off the command line
 
 The examples above pass the password as an argument, which means it can show
-up in `docker inspect`, `ps` and your shell history. For the servers
-themselves, Kea can read it from a file instead:
+up in `docker inspect`, `ps` and your shell history. `kea-admin` needs `-p`,
+so run it somewhere the command won't be saved, for example not from a shell
+that keeps its history.
 
-```json
-"lease-database": {
-  "type": "mysql",
-  "host": "db.example.net",
-  "name": "kea",
-  "user": "kea",
-  "password-file": "/run/secrets/kea-db-password"
-}
-```
-
-`kea-admin` still needs `-p`, so run it somewhere the command won't be saved,
-for example not from a shell that keeps its history.
+The servers themselves read the password from their config file, so keep
+that file private. [Configuration](configuration.md#using-a-database-for-leases)
+shows how.
 
 ## Going from 3.2 back to 3.0
 

@@ -108,17 +108,33 @@ If you do, open an issue: it's about 2 MB and one build flag.
 
 By default, leases live in a CSV file under `/var/lib/kea`. You can use MySQL
 or PostgreSQL instead. Set the database up with `kea-admin` from the
-`kea-tools` image, and give Kea its password from a file rather than in the
-config:
+`kea-tools` image.
+
+In Kea 3.x, each database backend is a *hook library*, so load the hook as
+well as setting the type. It's easy to miss, and without it Kea refuses to
+start:
 
 ```json
+"hooks-libraries": [
+  { "library": "/usr/lib/kea/hooks/libdhcp_mysql.so" }
+],
 "lease-database": {
   "type": "mysql",
   "host": "db.example.net",
   "name": "kea",
   "user": "kea",
-  "password-file": "/run/secrets/kea-db-password"
+  "password": "CHANGEME"
 }
+```
+
+For PostgreSQL, use `libdhcp_pgsql.so` and `"type": "postgresql"`.
+
+Kea reads the database password from the config file itself; it doesn't
+accept a separate password file here (unlike TSIG keys). So keep the config
+file private: readable by UID 10000 and nobody else, and mounted read-only.
+
+```bash
+chmod 600 kea-dhcp4.conf && sudo chown 10000:10000 kea-dhcp4.conf
 ```
 
 If you ever move between Kea 3.0 and 3.2 with a database,

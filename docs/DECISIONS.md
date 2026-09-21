@@ -1446,7 +1446,17 @@ the tag comparison caught what the `Link` parsing should have. Each now has a
 test that only it can catch, and the pagination checks are also tested on
 `tag_list()` alone.
 
-**Still manual, still a dry run by default.** Nothing runs it on a schedule.
+**Still manual, still a dry run by default.** Nothing runs it on a schedule,
+and that's a decision rather than a gap. Every build still leaves 4 tiny
+wrapper indexes per package, so there's always *something* to collect, but
+they cost nothing (GHCR storage is free, and each is a few hundred bytes with
+no layers). A scheduled job would be unattended automation whose worst case
+is breaking every published image, in exchange for a tidier version list.
+Running it by hand now and then is enough.
+
+We keep the script even so. It's the only tested, safe way to clean up this
+registry, and without it the easy option is an off-the-shelf "delete untagged
+versions" action, which D17 shows would break all five images.
 
 **The first real run, 2026-09-21**, with no build running and
 `--max-fraction 0.55`. `kea-ctrl-agent` first: 65 of 154 deleted, exactly as
