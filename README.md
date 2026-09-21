@@ -438,6 +438,13 @@ republished a modified image under a similar name, this fails.
 **Pin the `--certificate-identity-regexp`.** Verifying without it only proves
 *something* signed the image, not that this project did.
 
+**Pinned to one architecture's digest?** Those verify too. Each multi-arch
+index is signed, and so are the `linux/amd64` and `linux/arm64` images inside
+it — so `ghcr.io/dapalab/kea-dhcp4@sha256:<arm64 digest>` verifies with the
+same command. The SBOM and provenance attestation manifests are not signed
+individually; nobody pulls them, and each signature costs registry space. See
+`docs/DECISIONS.md` D25.
+
 ### Build provenance and SBOM
 
 Images also carry buildx-generated SBOM and SLSA provenance attestations:

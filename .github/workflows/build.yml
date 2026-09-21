@@ -536,20 +536,50 @@ jobs:
         run: |
           set -euo pipefail
           test -s /tmp/sign-refs.txt || { echo "::error::no refs to sign"; exit 1; }
+
+          # The index, and the two platform images inside it - so a digest
+          # pinned per architecture verifies too. NOT the attestation
+          # manifests, which nobody pulls, and NOT --recursive, which signs
+          # them anyway. On GHCR every signature costs two package versions
+          # (no Referrers API, so cosign falls back to a tagged index beside
+          # the bundle): recursive was 10 per index, this is 6. See D25.
+          : > /tmp/sign-subjects.txt
           while read -r ref; do
             [ -n "$ref" ] || continue
-            echo "::group::sign $ref"
-            cosign sign --recursive "$ref"
-            echo "::endgroup::"
+            repo="${ref%@*}"
+            mapfile -t platforms < <(docker buildx imagetools inspect --raw "$ref" \
+              | jq -r '.manifests[] | select(.platform.os != "unknown") | .digest')
+            # Already asserted amd64+arm64 above; re-check here, because a
+            # wrong count would silently sign too little or too much.
+            if [ "${#platforms[@]}" -ne 2 ]; then
+              echo "::error::${ref} has ${#platforms[@]} platform images, expected 2"
+              exit 1
+            fi
+            printf '%s\n' "$ref" "${platforms[@]/#/${repo}@}" >> /tmp/sign-subjects.txt
           done < /tmp/sign-refs.txt
 
+          while read -r subject; do
+            echo "::group::sign $subject"
+            cosign sign "$subject"
+            echo "::endgroup::"
+          done < /tmp/sign-subjects.txt
+
+          # Not `cosign verify ... && echo ok`: a failure on the left of && is
+          # exempt from set -e, so every subject but the last could fail
+          # verification and the step would still pass. It did, until D25.
           echo "::group::verify what we just signed"
-          while read -r ref; do
-            [ -n "$ref" ] || continue
-            cosign verify "$ref" \
-              --certificate-identity-regexp \
-                "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/build\.yml@" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              > /dev/null && echo "  ok  $ref"
-          done < /tmp/sign-refs.txt
+          fail=0
+          while read -r subject; do
+            if cosign verify "$subject" \
+                 --certificate-identity-regexp \
+                   "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/build\.yml@" \
+                 --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                 > /dev/null; then
+              echo "  ok    $subject"
+            else
+              echo "::error::signature does not verify: $subject"
+              fail=1
+            fi
+          done < /tmp/sign-subjects.txt
           echo "::endgroup::"
+          exit "$fail"

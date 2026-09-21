@@ -850,10 +850,11 @@ signing binds the signature to the workflow identity
 (`.../build.yml@refs/heads/main`) and records it in Sigstore's public
 transparency log. There is nothing to leak.
 
-**Sign the index, not the tags.** One signature per image index covers every
-tag pointing at it, so `3.2` and `3.2.0` need one between them. It also stays
-valid when a moving tag is later repointed, because the signature is bound to
-bytes rather than to a name.
+**Sign the index, not the tags** (amended by D25: and its two platform
+images). One signature per image index covers every tag pointing at it, so
+`3.2` and `3.2.0` need one between them. It also stays valid when a moving tag
+is later repointed, because the signature is bound to bytes rather than to a
+name.
 
 **Signing happens last**, after the multi-arch verification step. A signature
 asserts "this CI produced these bytes"; attaching one to an image we had not
@@ -1206,3 +1207,66 @@ the D23 SBOM document. Until a build has republished them it will correctly
 report itself broken, because the document is genuinely absent — verified by
 dry-running it against the images published before D23 landed.
 
+
+---
+
+## D25 — Sign the index and its platform images, not everything inside it
+
+**Decision.** Sign each multi-arch index and the two platform images it
+contains, by digest. Not `cosign sign --recursive`.
+
+**What `--recursive` was costing, measured on GHCR.** A fused index holds four
+manifests: `linux/amd64`, `linux/arm64`, and one SBOM/provenance attestation
+manifest per architecture. Recursive signing signed all five. And each
+signature is **two** package versions on GHCR, not one: cosign writes the
+Sigstore bundle format as an OCI 1.1 referrer, GHCR has no Referrers API
+(`/v2/<name>/referrers/<digest>` returns 404), so cosign falls back to the
+referrers *tag* schema:
+
+| Version | Tagged | Contents |
+|---|---|---|
+| bundle manifest | no | `artifactType: application/vnd.dev.sigstore.bundle.v0.3+json`, `subject: <digest>` |
+| referrers index | `sha256-<hex>` | lists the bundle manifest |
+
+So 10 package versions per signed index, 20 per package per build, about 90
+per build across the five packages. Now 6, 12 and 54.
+
+**Why not the index alone (2 per index).** Considered, and it covers the way
+the README says to verify: a tag resolves to the index. But someone pinning a
+single architecture's digest — what a node actually pulls — would then get
+"no signatures found" for a genuine image. Verification that works only if you
+pinned the right kind of digest is a trap, and four extra small manifests per
+index is a fair price to avoid it.
+
+**Why not the attestation manifests.** They are build metadata that nobody
+pulls, and they are already bound to the image they describe by the signed
+index that lists them.
+
+**Note the tag format.** These signature tags are `sha256-<hex>` with **no**
+`.sig` suffix — the old cosign signature format used `sha256-<hex>.sig`. Any
+tool that recognises signatures by suffix, including `scripts/gc-packages.py`
+as of this entry, will not recognise these.
+
+### The self-verification could not fail
+
+D18 says the workflow verifies its own signatures before finishing, "so a run
+cannot report success having produced something unverifiable". The loop did:
+
+```bash
+cosign verify "$ref" ... > /dev/null && echo "  ok  $ref"
+```
+
+A command that fails on the left of `&&` is exempt from `set -e`. Every ref but
+the last could fail verification and the step exited 0. Demonstrated by
+running the step as it stood, extracted from `build.yml`, against a stub
+`cosign` that fails verification for the first of two refs: no "ok" line for
+it, and exit 0. The rewritten step fails with `::error::signature does not
+verify: <subject>` and exit 1 in the same harness, and also refuses an index
+that does not contain exactly two platform images.
+
+The pattern again: a check that had never failed in front of anyone, and
+could not.
+
+**Existing signatures are left alone.** Images signed recursively before this
+change keep their extra signatures; they are harmless, and are collected with
+the builds they belong to.
