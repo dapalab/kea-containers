@@ -56,7 +56,7 @@ jobs:
   scan:
     # A failed build published nothing new, so there's nothing new to scan.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       issues: write
