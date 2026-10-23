@@ -16,14 +16,14 @@
     "3.2": {
       "kea": "3.2.1",
       "alpine": "3.24",
-      "alpineRef": "alpine:3.24@sha256:71e9b7bae160ba167fa17414401b94cbcdaf3c32feeab9298bd794a2a0614c35",
+      "alpineRef": "alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a",
       "lts": false,
       "images": ["dhcp4", "dhcp6", "dhcp-ddns", "tools"]
     },
     "3.0": {
       "kea": "3.0.4",
       "alpine": "3.24",
-      "alpineRef": "alpine:3.24@sha256:71e9b7bae160ba167fa17414401b94cbcdaf3c32feeab9298bd794a2a0614c35",
+      "alpineRef": "alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a",
       "lts": true,
       "images": ["dhcp4", "dhcp6", "dhcp-ddns", "ctrl-agent", "tools"]
     }
