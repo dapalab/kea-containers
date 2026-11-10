@@ -50,7 +50,7 @@ env:
   REGISTRY: ghcr.io
   # Pinned by digest (Renovate keeps it up to date), so the scan can't quietly
   # switch to a different version of the tool.
-  GRYPE: anchore/grype:v0.121.1@sha256:6b06708b036f74b2cd70e94b706b4586af96d1932e6ac46255940b2e39dd44a9
+  GRYPE: anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887
 
 jobs:
   scan:
