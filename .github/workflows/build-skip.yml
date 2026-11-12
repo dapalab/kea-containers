@@ -39,7 +39,7 @@ permissions:
 jobs:
   required:
     name: required
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: No image-affecting files changed
         run: |
